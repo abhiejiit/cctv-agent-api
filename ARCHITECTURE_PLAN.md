@@ -4,7 +4,7 @@
 
 The product idea is sound: let an authenticated resident ask natural-language questions about current conditions in named camera zones, resolve the zone and question, obtain fresh structured observations, and answer with clear uncertainty. The key design boundary is that computer vision should produce timestamped observations, deterministic application code should decide which observations the user may access and whether they answer the question, and the language model should help interpret and explain—not invent facts or control cameras.
 
-For the first production-shaped prototype, use **one authenticated API with a CrewAI-based orchestration flow**, a camera registry, camera-specific agents with scoped tools, and a grounded response. The Flow classifies/resolves the request and deterministically selects the matching camera agent (for example, `HallCameraAgent`). That agent is instructed to call its specific tool with structured arguments (for example, `fetch_hall_details(entity="door")`), receive tailored JSON from the camera observation service, and answer from that response. Keep authorization, camera resolution validation, freshness checks, tool input validation, and response grounding checks in ordinary application code even though CrewAI orchestrates the work.
+For the first production-shaped prototype, use **one authenticated API, a stateful request workflow, an intent-classification LLM call, and a post-classification CrewAI Flow**. The classifier writes one allowed intent to state. CrewAI always starts afterward and switches on that value to select a camera agent or the greetings/clarification agent. Each camera agent is instructed to call its scoped tool with arguments it extracts from the user message (for example, `fetch_front_entrance_details(entity="door")`), receive tailored JSON from the observation service, and answer from that result. Application code enforces authorization, freshness, tool validation, and response grounding.
 
 The current repository contains only a YOLO tracking script, a model weights file, and a short requirements file. It currently loads a local MP4 path, tracks objects, and displays/saves results; there is no HTTP service, live stream ingestion, authentication, LLM, persistence, or tests. This plan starts with a safe mock-backed end-to-end API, then integrates live video incrementally.
 
@@ -12,7 +12,7 @@ The current repository contains only a YOLO tracking script, a model weights fil
 
 ### Initial user promise
 
-Answer questions such as “Is there a car in the parking lot?”, “Is the hall door closed?”, “Is the living-room fan on?”, and “Are there vehicles outside?” from observations associated with cameras the authenticated user is allowed to query. Answers must identify when the observation was captured and say when the camera is stale, unavailable, obscured, or unable to support the requested inference.
+Answer questions such as “Is there a car in the parking lot?”, “Is the front entrance door closed?”, “Is the lawn clear?”, and “Are there vehicles outside?” from observations associated with cameras the authenticated user is allowed to query. Answers must identify when the observation was captured and say when the camera is stale, unavailable, obscured, or unable to support the requested inference.
 
 ### Recommended MVP boundary
 
@@ -51,7 +51,7 @@ Answer questions such as “Is there a car in the parking lot?”, “Is the hal
 
 4. **Use camera-specific agents with narrow responsibilities.** Since the desired design assigns a camera agent after classification, configure one agent per camera intent/region where its dedicated tool scope is useful. Keep the registry and Flow routing deterministic; avoid duplicating agent code for cameras with identical behavior. Model `unsupported`, `not_authorized`, `camera_unavailable`, and `stale_data` explicitly alongside clarification.
 
-5. **Keep the classifier output small and schema-constrained.** Return fields like `intent`, `camera_id` (or unresolved candidate), `target`, `desired_state`, `time_scope`, and `confidence`; validate every enum/id and resolve aliases against the caller’s authorized camera list in application code. Low confidence or multiple plausible cameras should clarify instead of silently choosing.
+5. **Keep classifier output to one schema-constrained intent label.** Accept only `front_entrance`, `parking`, `back_entrance`, `common_lawn`, `greetings`, or `intent_clarify`. The classifier does not extract entities or select cameras/tools. Each camera agent determines the requested entity/property from the message and fills its own scoped tool arguments; application code and the tool validate access and capability.
 
 6. **Conversation storage needs clear consistency and privacy semantics.** Redis is a short-lived cache, not the authoritative history. Store messages in MongoDB with tenant/user scope and retention rules; update the cache only after durable persistence succeeds (or use an outbox/queue if asynchronous persistence is required). Use TTL, bounded token/context budgets, encryption and access controls. Load only the last relevant turns, not blindly every last five messages—follow-ups may need a compact state summary, while unrelated messages should not influence routing.
 
@@ -63,55 +63,78 @@ Answer questions such as “Is there a car in the parking lot?”, “Is the hal
 
 ```mermaid
 flowchart LR
-  C[Camera / NVR streams] --> I[Ingestion workers]
-  I --> V[Vision pipeline: detections + state estimates]
-  V --> O[(Observation store / latest-state cache)]
-  U[Authenticated client] --> A[POST /v1/ask request]
-  A --> Auth[Identity + household/camera authorization]
-  Auth --> Guard[Request validation + abuse limits]
-  Guard --> Hist[Minimal relevant conversation context]
-  Hist --> Flow[CrewAI Flow / orchestration boundary]
-  Flow --> Plan[Intent Classifier Agent: strict structured output]
-  Plan --> Val[Deterministic intent validation + entity resolution]
-  Val -->|ambiguous| Clarify[Clarification Agent or template]
-  Val -->|authorized hall query| Hall[Hall Camera Agent]
-  Val -->|authorized parking query| Parking[Parking Camera Agent]
-  Hall -->|calls hall details tool| HallTool[Hall scoped tool]
-  Parking -->|calls parking details tool| ParkingTool[Parking scoped tool]
-  HallTool --> ObsSvc[Observation service]
-  ParkingTool --> ObsSvc
-  ObsSvc --> O
-  O --> ObsSvc
-  ObsSvc -->|typed JSON result| HallTool
-  ObsSvc -->|typed JSON result| ParkingTool
-  HallTool -->|tool result| Hall
-  ParkingTool -->|tool result| Parking
-  Hall -->|answer from tool result| Check[Freshness, evidence, and response validation]
-  Parking -->|answer from tool result| Check
-  Clarify --> Check
-  Check --> Persist[(MongoDB conversation history)]
-  Check --> Resp[Validated API response]
-  Resp --> U
-  Hist -. cache .-> Redis[(Redis TTL cache)]
-  Persist -. cache refresh .-> Redis
+  subgraph CameraPipeline[Background camera pipeline]
+    Cam[Cameras / NVR] --> Worker[Ingestion workers]
+    Worker --> Vision[Vision detection and state estimation]
+    Vision --> ObsDB[(🍃 MongoDB observations)]
+  end
+
+  User[Authenticated user] --> API[POST /cctv-agent]
+  API --> Auth[Authenticate and authorize]
+  Auth --> Context[Load conversation context]
+  Context <--> Cache[(🔴 Redis recent-context cache)]
+  ChatDB -. cache miss / durable history .-> Context
+  API --> State[Initialize request state]
+  Context --> State
+  State --> Guard[Input guardrails inspect input and state]
+  Guard -->|record guardrail status in state| Classifier[Classifier LLM: intent only]
+  Classifier --> Update[Validate and write state.intent]
+  Update --> Crew[CrewAI stateful agentic Flow]
+  Crew --> Switch{Switch on state.intent}
+
+  Switch -->|front_entrance| Front[Front Entrance Agent]
+  Switch -->|parking| Park[Parking Agent]
+  Switch -->|back_entrance| Back[Back Entrance Agent]
+  Switch -->|common_lawn| Lawn[Common Lawn Agent]
+  Switch -->|greetings| Greet[Greetings Agent]
+  Switch -->|intent_clarify| Clarify[Clarification Agent]
+
+  Front --> Tool[Camera-scoped tool]
+  Park --> Tool
+  Back --> Tool
+  Lawn --> Tool
+  Tool --> ObsSvc[Observation service]
+  ObsSvc --> ObsDB
+  ObsDB --> ObsSvc
+  ObsSvc -->|tailored JSON| Tool
+  Tool -->|tool result| Front
+  Tool -->|tool result| Park
+  Tool -->|tool result| Back
+  Tool -->|tool result| Lawn
+
+  Front --> Answer[Agent response]
+  Park --> Answer
+  Back --> Answer
+  Lawn --> Answer
+  Greet --> Answer
+  Clarify --> Answer
+  Answer --> Persist[Persist conversation turn]
+  Persist --> ChatDB
+  Persist -. refresh cache .-> Cache
+  Persist --> Response[Validated API response]
+  Response --> User
 ```
 
-### Request path
+**MongoDB** is the durable database for conversation history and normalized camera observations. 
+**Redis** is the fast, TTL-based cache for recent conversation context; on a cache miss, context is loaded from MongoDB, and durable conversation writes refresh Redis. The **Classifier LLM** only emits the intent enum. **CrewAI** is the agentic orchestration framework: its stateful Flow switches on the stored intent and invokes the corresponding LLM-backed agent; camera agents additionally call their scoped tools.
 
-1. `POST /v1/ask` validates JSON schema, request id, text length, locale, and optional conversation id.
-2. Authentication middleware obtains the principal. Authorization resolves the household and allowed cameras from server-side records.
-3. Abuse controls apply per account/IP/device, with request/token ceilings and timeouts.
-4. Context builder loads a small, relevant subset of the conversation (only within the same household/user and conversation), or a bounded summary plus recent turns.
-5. A CrewAI Flow starts with an Intent Classifier Agent that emits a validated structure: camera intent, entity, property, time scope, and language/tone hints. The model cannot invent an agent name, tool name, camera id, or external resource.
-6. Deterministic resolver maps zone aliases and target terms to configured entities, confirms that the user is authorized for that camera, and checks that the requested entity/property is supported there.
-7. If ambiguous, return a short clarification without querying any camera. If unsupported, explain the limitation.
-8. Flow maps the validated camera intent to a configured camera agent and a camera-specific allowlist of tools. For example, `camera-hall` routes to `HallCameraAgent`, which has `fetch_hall_details(entity=...)` available. The agent extracts/fills the tool argument from the validated query plan and calls the tool.
-9. The tool validates the entity against its literal/enum and camera capability config, independently enforces authorization and freshness, calls the camera observation service, and returns typed JSON. It never accepts arbitrary camera paths or URLs. If no sufficiently fresh record exists, it returns a structured stale/unavailable result.
-10. The camera agent receives the tool result and answers the user from that data only. It must state uncertainty, age, or failure where present and abstain when the returned data does not support the requested claim. Application code validates the final status/evidence linkage before returning it. Persist user and assistant turns; update Redis according to the consistency policy.
+### Request path: stateful request handling, then CrewAI for every classified intent
+
+The request has one typed state that is updated throughout the lifecycle. Input guardrails and intent classification run before CrewAI starts. **After classification, the CrewAI Flow is always invoked**, and it selects the agent using a switch on the validated `state.intent`. This applies to camera intents, `greetings`, and `intent_clarify`.
+
+1. `POST /cctv-agent` validates the HTTP envelope (JSON schema, request id, text length, locale, and optional conversation id). Authentication middleware obtains the principal and server-side household/camera access context.
+2. The application creates a typed request state containing the user message, authenticated principal reference, conversation reference, bounded recent context, request metadata, and empty guardrail, intent, and result fields.
+3. **Input guardrails** inspect the user message and relevant state/context, apply deterministic validation and policy checks, and update state with `guardrail_status` and findings. Hard-blocked input is marked in state; it still proceeds through classification and CrewAI, where the safe outcome is handled without camera retrieval. Guardrails reduce risk but do not eliminate prompt injection.
+4. A regular structured-output **classifier LLM call** runs outside CrewAI. Its only job is to assign one exact intent from the supported enum: `front_entrance`, `parking`, `back_entrance`, `common_lawn`, `greetings`, or `intent_clarify`. It writes the intent to state; it does not select tools, extract tool arguments, or answer the user.
+5. Application code validates that the classifier returned an allowed intent and writes the trusted value to `state.intent`. If the value is malformed, use a safe fallback of `intent_clarify` and record the validation failure. Authorization for a camera is checked before that camera's tool can run; the overall CrewAI Flow still starts.
+6. The application always starts the CrewAI Flow after classification and passes the typed request state (or a safe projection). A switch reads `state.intent` and selects the corresponding configured agent. Intent values map through a static registry; they are never used as dynamic imports or arbitrary tool names.
+7. Camera agents receive only their camera-scoped tools. For example, `front_entrance` routes to `FrontEntranceAgent`, which reads the original user message/context from state, extracts the relevant entity/property, fills the tool arguments, and calls its `fetch_front_entrance_details(...)` tool. The classifier does not supply those tool arguments.
+8. The tool validates entity/property against its allowed schema and camera capability configuration, independently enforces access and freshness, calls the observation service, and returns tailored JSON. It never accepts arbitrary camera paths or URLs. Stale/unavailable data is returned as a structured result.
+9. Camera agents answer only from the tool result. The `greetings` agent responds conversationally without camera tools; the `intent_clarify` agent asks a concise follow-up and does not query cameras. A guardrail-blocked state takes a safe response path within the Flow. The outer workflow validates the result, updates state, persists conversation turns, refreshes Redis, and returns the API response.
 
 ### Suggested API contract
 
-`POST /v1/ask`
+`POST /cctv-agent`
 
 ```json
 {
@@ -137,32 +160,28 @@ Response:
 }
 ```
 
-Use a stable status enum: `answered`, `clarification_required`, `unsupported`, `camera_unavailable`, `stale_data`, `not_authorized`, `temporarily_unavailable`. Avoid exposing internal prompts, raw model reasoning, credentials, or unnecessary detection metadata to the client.
+Use a stable response status enum such as `answered`, `clarification_required`, `guardrail_blocked`, `camera_unavailable`, `stale_data`, `not_authorized`, and `temporarily_unavailable`. Intent selection remains one of the six fixed intents; response status is separate from intent. Avoid exposing internal prompts, raw model reasoning, credentials, or unnecessary detection metadata to the client.
 
 ## 5. Intent and entity model
 
-Represent user intent separately from the camera name. The intent classifier returns a bounded plan; deterministic code resolves that plan to the configured camera-specific agent and tool allowlist. Example query-plan schema:
+The classifier's output is only the intent label. It does not extract the entity, choose a tool, or answer the question. Use a strict enum so the CrewAI Flow can switch safely on `state.intent`:
 
 ```json
 {
-  "intent": "observation_query",
-  "camera_hint": "parking",
-  "entity": "vehicle",
-  "property": "presence",
-  "time_scope": "current",
-  "clarification_needed": false,
-  "confidence": 0.96
+  "intent": "parking"
 }
 ```
 
-Recommended primary outcomes:
+Allowed values and corresponding agents:
 
-- `observation_query`: supported question about a target/property/time scope.
-- `clarification_required`: missing or ambiguous room/door/target/time reference.
-- `unsupported`: outside product scope (identity, future prediction, action request, unsupported device state).
-- `smalltalk_or_help`: safe product help, if intentionally supported.
+- `front_entrance` → Front Entrance Agent
+- `parking` → Parking Agent
+- `back_entrance` → Back Entrance Agent
+- `common_lawn` → Common Lawn Agent
+- `greetings` → Greetings Agent
+- `intent_clarify` → Clarification Agent
 
-Camera selection is resolved by deterministic configuration. A mapping can include `camera-parking` aliases such as “parking”, “driveway”, and “car park”, subject to the home’s actual setup. “My door” should clarify if multiple configured doors/cameras are plausible; if context uniquely identified a door in the current conversation, reuse that entity only after scope validation.
+The classifier selects one allowed label from the user input and relevant conversation context, then writes it into request state. If output is malformed or outside the enum, application validation writes `intent_clarify` as a safe fallback and records the error. The CrewAI Flow always starts after classification and switches on that state field. Camera agents, not the classifier, read the original message/context and determine the entity/property tool arguments. The clarification agent handles ambiguity such as “Is my door open?” and out-of-scope questions with a clarification or safe scope explanation; the greetings agent handles greetings and brief conversational openings.
 
 ## 6. Vision and observation data model
 
@@ -192,36 +211,47 @@ Consider storing event summaries and latest-state snapshots separately: events s
 
 ## 7. CrewAI orchestration and camera-agent/tool design
 
-Use a CrewAI Flow as the orchestration boundary. The Flow owns explicit states, validated transitions, and conditional routing. After classification and deterministic authorization/entity resolution, route to the corresponding camera-specific agent. That agent is explicitly instructed to call its scoped tool, fill the tool arguments from the validated request, interpret the returned JSON, and answer only from that result. Tools are narrow adapters to application services. Do not make an agent decide whether a user is authorized, whether a camera id exists, or whether data is fresh. Do not let “backstory” carry security rules: those are enforced in code.
+The complete request lifecycle uses typed state in the application workflow. Input guardrails and intent classification run before CrewAI starts. After classification, CrewAI is always invoked and uses a switch on `state.intent` to select one of the six configured agents. No agent decides authorization, camera existence, or freshness; application code enforces those controls.
 
-### Suggested Flow stages
+### Outer application workflow (before and after CrewAI)
 
-1. **`load_context` (application code):** authenticate already-established principal, load authorized camera metadata and bounded conversation context.
-2. **`classify_intent` (Intent Classifier Agent):** produce schema-bound `camera_hall`, `camera_parking`, etc., or `intent_clarify`, `unsupported`, `smalltalk_or_help`; include entity/property/time scope and language/tone hints. Classification uses the user message and bounded same-conversation context.
-3. **`validate_and_resolve` (application code):** parse the structured result; validate enum values; resolve aliases only against the authenticated user's camera registry; check access and that the requested entity/property is supported by that camera. Reject or route to clarification on invalid/low-confidence output.
-4. **`route_to_camera_agent` (CrewAI Flow):** map the resolved camera id through a static server-side registry to its camera agent and that agent's allowed tools. Never derive Python class names or tool names from free-form model output.
-5. **`call_camera_tool` (camera-specific agent):** the agent's task instructions require a tool call for factual camera questions. It populates typed arguments, e.g. `entity="door"`, and calls the scoped tool. The tool checks the principal/camera scope again, validates entity/property, applies max-age policy, queries the observation service, and returns typed JSON.
-6. **`assess_evidence` (deterministic code):** evaluate observation age, camera health, image quality, confidence thresholds, and whether the evidence supports the exact requested property. Route insufficient evidence to stale/unavailable/uncertain result.
-7. **`answer_from_tool_result` (same camera agent or response task):** provide a concise, language-matched response using the tool output only, including mandatory caveats. A tool error or empty result must never be converted into a guessed yes/no answer.
-8. **`validate_and_persist` (application code):** validate response status/evidence association and save interaction; update cache under authenticated conversation scope.
+1. **`initialize_state`:** create typed state with request id, user message, authenticated principal reference, conversation reference, bounded context, and empty guardrail/intent/result fields.
+2. **`run_input_guardrails`:** inspect user input and relevant state/context, then write guardrail status and findings into state. A block flag does not bypass classification or the CrewAI Flow; it is carried forward so the selected agent can refuse safely and tools can deny retrieval.
+3. **`classify_intent`:** make a normal structured-output LLM call outside CrewAI. Return only one enum label: `front_entrance`, `parking`, `back_entrance`, `common_lawn`, `greetings`, or `intent_clarify`. The classifier has no tools and does not answer or extract tool arguments.
+4. **`validate_and_update_intent`:** validate that the label is in the allowlist and write it to `state.intent`. If malformed, set `intent_clarify` and record a classification validation error. This step does not select an agent.
+5. **`run_crewai_flow`:** always pass the typed request state projection to CrewAI after classification and state update, regardless of which of the six intents was returned.
+6. **`finalize_state`:** validate the returned result, update state with evidence and answer, persist conversation messages, refresh cache, and return the API response.
 
-Flow state should be a small typed object, not a free-form transcript. Include the principal/tenant identifiers only as opaque server-side references; never expose them as agent-editable fields. Keep image/frame references out of agent context unless a specific vision task requires them.
+### CrewAI Flow (always starts after intent is classified)
+
+1. **`load_state`:** receive request state, including `state.intent`, user message/context, and guardrail status.
+2. **`switch_on_intent`:** explicit branches map all six intent values to agents: `front_entrance`, `parking`, `back_entrance`, `common_lawn`, `greetings`, and `intent_clarify`. Use a static registry; never derive Python class or tool names from free-form model output.
+3. **`run_selected_agent`:** the selected agent follows its role instructions. If guardrails marked the request blocked, it returns a safe refusal and does not retrieve camera data.
+4. **`camera_agent_tool_call` (camera intents only):** the camera agent reads the original message/context, determines the entity/property, fills typed tool arguments, and calls only its camera-scoped tool.
+5. **`retrieve_observation` (tool/application service):** recheck access and entity/property, apply freshness policy, fetch camera data, and return tailored JSON.
+6. **`answer_from_result`:** camera agents answer only from tool data; Greetings Agent responds without camera tools; Clarification Agent asks a concise follow-up without camera retrieval. All agents honor guardrail status.
+7. **`return_result`:** return a typed agent result to the outer workflow for final validation and state update.
+
+The request state is a small typed object, not a free-form transcript. Suggested fields: `request_id`, `principal_ref`, `conversation_ref`, `user_message`, `context_messages`, `guardrail_status`, `guardrail_findings`, `intent`, `tool_result`, `answer`, and `response_status`. Entity/property/tool arguments are populated by the selected camera agent from the original message and context, then validated by its tool. Keep principal/tenant references opaque and never model-editable; do not include secrets or raw frames. The CrewAI Flow receives only the fields it needs.
 
 ### Camera-specific agents and scoped tools
 
-- **Intent Classifier Agent**: extracts camera intent, entity, property, time scope, ambiguity, and language/tone hints; returns only the plan schema. It has no camera retrieval tools.
-- **Hall Camera Agent**: handles requests resolved to the hall camera; its task explicitly says to call `fetch_hall_details` for supported hall questions, provide the correct `entity`, and base the final answer only on the returned JSON.
-- **Parking Camera Agent**: analogous for the parking camera and `fetch_parking_details`.
-- **Other camera agents**: add when configured cameras need genuinely distinct tool capabilities or instructions. Share base prompt/task patterns, but expose only that camera's tools.
-- **Optional response/analysis agent**: useful if tool interpretation and tone generation should be separated; receives only validated tool JSON and cannot call retrieval tools.
+- **Classifier LLM call**: a regular structured-output LLM invocation in the outer workflow. It outputs only the allowed intent label and has no tools.
+- **Front Entrance Agent**: handles `front_entrance`; extracts entity/property from the user message and calls only `fetch_front_entrance_details(...)`.
+- **Parking Agent**: handles `parking` and calls only `fetch_parking_details(...)`.
+- **Back Entrance Agent**: handles `back_entrance` and calls only `fetch_back_entrance_details(...)`.
+- **Common Lawn Agent**: handles `common_lawn` and calls only `fetch_common_lawn_details(...)`.
+- **Greetings Agent**: handles `greetings`, replies conversationally, and has no camera tools.
+- **Clarification Agent**: handles `intent_clarify`, asks a concise question, and has no camera tools.
 
 Example tool interface:
 
 ```python
-def fetch_hall_details(
+def fetch_front_entrance_details(
     entity: Literal["door", "window", "chair", "person", "fan", "vehicle"],
-) -> HallObservationResult:
-    """Return the latest authorized, sufficiently fresh structured hall observation for an entity."""
+    property: Literal["presence", "count", "open_closed", "on_off"],
+) -> CameraObservationResult:
+    """Return the latest authorized, sufficiently fresh front-entrance observation for an entity."""
 ```
 
 The concrete tool should return a typed result that includes `camera_id`, `entity`, `captured_at`, `status`, `detections` or `state`, `confidence`, and quality/freshness metadata. Prefer deriving the entity argument from the validated plan and passing it into the agent task as structured context, while still requiring the agent to perform the tool call. Restrict the tool's entity enum to what the camera can actually assess. A `person` detection result must not imply identity. If a tool request needs both a broad entity and a specific property (for example door + open/closed), include both in the schema instead of hoping the model infers an underspecified query.
@@ -230,7 +260,7 @@ Camera-specific behavior should be parameterized from trusted server configurati
 
 ### CrewAI tool boundaries
 
-- Implement each camera tool as a thin wrapper around application service interfaces so CrewAI can be replaced or upgraded without changing camera storage, authorization, or vision processing. Examples: `fetch_hall_details(entity)` and `fetch_parking_details(entity)` internally call shared observation services with a fixed camera scope.
+- Implement each camera tool as a thin wrapper around application service interfaces so CrewAI can be replaced or upgraded without changing camera storage, authorization, or vision processing. Examples: `fetch_front_entrance_details(entity)` and `fetch_parking_details(entity)` internally call shared observation services with a fixed camera scope.
 - Each tool has typed input/output schemas, entity enums, and tight timeouts. Include the observation timestamp, confidence, health, and freshness in results.
 - Expose no generic `run_sql`, arbitrary URL fetch, filesystem, shell, raw database, or “choose any camera” tool to agents.
 - The Flow supplies only the camera agent and tools relevant to the validated plan. Enforce tool-call count, max fan-out (one camera in MVP), and total orchestration deadline.
@@ -261,15 +291,15 @@ Camera-specific behavior should be parameterized from trusted server configurati
 
 ### Phase 1 — Service foundation and mock vertical slice
 
-**Deliverables:** application package structure; configuration and secrets loading; `POST /v1/ask`; auth dependency (local dev identity first, real provider interface); request/response schemas; health/readiness endpoints; structured logging and request ids; deterministic mock observation provider.
+**Deliverables:** application package structure; configuration and secrets loading; `POST /cctv-agent`; auth dependency (local dev identity first, real provider interface); typed outer request state and stateful application workflow; pre-classification input guardrails that update state; request/response schemas; health/readiness endpoints; structured logging and request ids; deterministic mock observation provider.
 
 **Exit criteria:** all example questions run end-to-end using mock observations; camera access is enforced before mock tool invocation; no endpoint accepts arbitrary camera ids without authorization.
 
 ### Phase 2 — Query planning, clarification, and tool contracts
 
-**Deliverables:** camera registry; CrewAI Intent Classifier Agent; strict JSON schema parsing; deterministic alias/target resolution and Flow routing; camera-specific CrewAI agents; scoped tools such as `fetch_hall_details(entity)` and `fetch_parking_details(entity)` backed by shared observation services; explicit statuses; tool-result-grounded responses.
+**Deliverables:** camera registry; direct structured-output LLM call that assigns only one of the six intents outside CrewAI; strict enum validation and state update; post-classification CrewAI Flow that always reads the intent from state and switches to the matching one of six agents; scoped camera tools backed by shared observation services; explicit response statuses; tool-result-grounded responses.
 
-**Exit criteria:** ambiguous “my door” clarifies; clearly specified hall door routes to hall; unsupported questions do not query cameras; malformed planner outputs fail closed; stale observations are never represented as current.
+**Exit criteria:** ambiguous “my door” is routed to `intent_clarify`; a parking question is routed to `parking`; greetings are routed to `greetings`; every valid classifier output starts the CrewAI Flow; malformed intent output safely falls back to `intent_clarify`; stale observations are never represented as current.
 
 ### Phase 3 — Conversation memory and persistence
 
@@ -295,27 +325,161 @@ Camera-specific behavior should be parameterized from trusted server configurati
 
 **Exit criteria:** routing, groundedness, freshness, authorization, latency, cost, and vision quality meet agreed thresholds; incidents can be audited without retaining unnecessary video; rollback path is documented.
 
-## 10. Suggested codebase evolution
+## 10. Proposed complete project structure
+
+This is the proposed target repository layout for the MVP and its first live-camera iteration. It is intentionally modular while remaining a single deployable Python application plus independently runnable vision workers. Files marked **MVP** are needed for the mocked end-to-end version; **Live** files are introduced when camera feeds are connected. The tree is a proposal for approval, not a claim that these files already exist.
 
 ```text
-app/
-  main.py                 # HTTP app and dependency wiring
-  api/routes/ask.py
-  api/schemas.py
-  auth/                   # principal, session/token validation, policies
-  cameras/registry.py     # authorized camera metadata and aliases
-  planning/               # planner interface, schemas, resolver
-  orchestration/          # CrewAI Flow, agents, tasks, bounded tool adapters
-  observations/           # tool contracts, mock provider, freshness policy
-  vision/                 # ingestion worker and YOLO adapter
-  memory/                 # context builder, Redis cache, Mongo repository
-  responses/              # grounded response construction
-  security/               # rate limits, validation, redaction
-  config.py
-  telemetry.py
+cctv_finder_poc/
+├── README.md                         # Setup, local run, architecture overview, API examples
+├── ARCHITECTURE_PLAN.md               # This architecture and execution plan
+├── pyproject.toml                     # Package metadata, dependency pins/groups, lint/type config
+├── requirements.txt                   # Optional exported runtime dependencies, if retained
+├── .env.example                       # Variable names and safe local defaults; no secrets
+├── .gitignore                         # Ignore venv, local secrets, caches, recordings, artifacts
+├── Dockerfile                         # API container image
+├── compose.yaml                       # Local API + Redis + Mongo + mock services
+├── migrations/                        # Mongo index/bootstrap migrations or versioned setup scripts
+│   └── README.md                      # Migration and index rollout procedure
+├── configs/
+│   ├── cameras.example.yaml           # Example camera/zone aliases and supported capabilities
+│   └── vision.example.yaml            # Sampling, max-age, model and confidence settings
+├── app/
+│   ├── __init__.py
+│   ├── main.py                        # FastAPI app factory, middleware and router registration
+│   ├── dependencies.py                # Request-scoped service dependency wiring
+│   ├── config.py                      # Typed settings and secret references
+│   ├── errors.py                      # Stable application errors and API mapping
+│   ├── workflow/
+│   │   ├── __init__.py
+│   │   ├── request_flow.py             # Outer stateful workflow: input -> guards -> classify -> CrewAI -> response
+│   │   └── request_state.py            # Typed state shared across outer workflow stages
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── router.py                  # API version router
+│   │   ├── schemas.py                 # Request/response Pydantic models
+│   │   └── routes/
+│   │       ├── __init__.py
+│   │       ├── cctv_agent.py          # POST /cctv-agent
+│   │       └── health.py              # Liveness/readiness endpoints
+│   ├── auth/
+│   │   ├── __init__.py
+│   │   ├── principal.py              # Authenticated identity and tenant types
+│   │   ├── middleware.py             # Identity-provider/session integration
+│   │   └── policy.py                 # Household, conversation and camera access checks
+│   ├── cameras/
+│   │   ├── __init__.py
+│   │   ├── models.py                  # Camera, alias, capability and agent mapping types
+│   │   ├── registry.py                # Server-trusted camera configuration lookup
+│   │   └── resolver.py                # Zone alias/entity resolution and ambiguity handling
+│   ├── planning/
+│   │   ├── __init__.py
+│   │   ├── models.py                  # IntentPlan and supported enum/schema definitions
+│   │   ├── classifier.py              # Direct LLM intent-classification call; outside CrewAI
+│   │   ├── validation.py              # Parse/validate classifier output; fail-closed behavior
+│   │   └── policy.py                  # Supported query/property and confidence policy
+│   ├── orchestration/
+│   │   ├── __init__.py
+│   │   ├── flow.py                    # CrewAI Flow; begins after outer workflow validates intent
+│   │   ├── state.py                   # Safe typed state projection passed into CrewAI Flow
+│   │   ├── registry.py                # Static camera-intent to agent/tool mapping
+│   │   ├── agents/
+│   │   │   ├── __init__.py
+│   │   │   ├── camera_base.py         # Shared camera-agent prompt/task construction
+│   │   │   ├── front_entrance.py      # Front Entrance Agent and task instructions
+│   │   │   ├── parking.py             # Parking Camera Agent and task instructions
+│   │   │   ├── back_entrance.py       # Back Entrance Agent and task instructions
+│   │   │   ├── common_lawn.py         # Common Lawn Agent and task instructions
+│   │   │   ├── greetings.py           # Greetings Agent; no camera tools
+│   │   │   └── clarification.py       # intent_clarify agent; no camera tools
+│   │   └── tools/
+│   │       ├── __init__.py
+│   │       ├── front_entrance.py      # fetch_front_entrance_details(...)
+│   │       ├── parking.py             # fetch_parking_details(...)
+│   │       ├── back_entrance.py       # fetch_back_entrance_details(...)
+│   │       └── common_lawn.py         # fetch_common_lawn_details(...)
+│   ├── observations/
+│   │   ├── __init__.py
+│   │   ├── models.py                  # Versioned observation/tool result schemas
+│   │   ├── service.py                 # Shared read/query interface for tools
+│   │   ├── freshness.py               # Max-age, stale/unavailable and quality decisions
+│   │   ├── repository.py              # Latest observation and event storage interface
+│   │   └── providers/
+│   │       ├── __init__.py
+│   │       ├── mock.py                # Deterministic mock observation provider (MVP)
+│   │       └── mongo.py               # Mongo-backed observation repository/provider
+│   ├── vision/
+│   │   ├── __init__.py
+│   │   ├── worker.py                  # Worker process entry point (Live)
+│   │   ├── camera_reader.py           # RTSP/NVR/snapshot source adapter (Live)
+│   │   ├── sampling.py                # Frame sampling and backpressure (Live)
+│   │   ├── detector.py                # YOLO adapter and detection normalization (Live)
+│   │   ├── state_estimators.py        # Door/fan or other supported state estimators (Live)
+│   │   └── health.py                  # Feed health and camera status (Live)
+│   ├── memory/
+│   │   ├── __init__.py
+│   │   ├── models.py                  # Conversation/message records
+│   │   ├── repository.py              # MongoDB durable conversation interface
+│   │   ├── redis_cache.py             # Tenant/user/conversation-scoped TTL cache
+│   │   ├── context_builder.py         # Relevant bounded conversation context
+│   │   └── retention.py               # Expiration and user/household deletion jobs
+│   ├── responses/
+│   │   ├── __init__.py
+│   │   ├── composer.py                # Grounded response task/template invocation
+│   │   ├── validation.py              # Output/evidence association checks
+│   │   └── localization.py            # Locale/tone handling and safe fallback text
+│   ├── security/
+│   │   ├── __init__.py
+│   │   ├── input_validation.py        # Length, format and content validation
+│   │   ├── input_guardrails.py        # Pre-classification checks; updates outer request state
+│   │   ├── rate_limits.py             # Per-principal/IP limits and concurrency budget
+│   │   ├── redaction.py               # Secret and sensitive-data log redaction
+│   │   └── prompt_policy.py           # Optional risk classifier; never sole security layer
+│   └── telemetry/
+│       ├── __init__.py
+│       ├── logging.py                 # Structured logs and correlation ids
+│       ├── metrics.py                 # Routing, freshness, latency, model and vision metrics
+│       └── tracing.py                 # API-to-Flow-to-tool spans
+├── scripts/
+│   ├── seed_mock_data.py              # Populate mock cameras/observations for local demo
+│   └── validate_camera_config.py      # Check alias, capability and tool mappings
+├── tests/
+│   ├── conftest.py                    # Test fixtures and fake service wiring
+│   ├── unit/
+│   │   ├── test_intent_validation.py
+│   │   ├── test_camera_resolution.py
+│   │   ├── test_tool_scope.py
+│   │   ├── test_freshness.py
+│   │   └── test_response_grounding.py
+│   ├── integration/
+│   │   ├── test_ask_mock_flow.py
+│   │   ├── test_conversation_isolation.py
+│   │   └── test_camera_tool_observations.py
+│   └── evals/
+│       ├── intent_cases.yaml          # Golden routing/clarification examples
+│       ├── grounding_cases.yaml       # Tool-result answer correctness cases
+│       └── vision_cases/README.md     # Dataset and annotation policy; no private clips committed
+└── deploy/
+    ├── api.Dockerfile                 # Optional separate API image definition
+    ├── worker.Dockerfile              # Vision worker image/runtime
+    ├── k8s/                           # Optional deployment manifests, added when needed
+    └── README.md                      # Environment-specific deployment and rollback notes
 ```
 
-Keep the existing script as an experiment or migrate its model invocation behind `vision/`; remove the hard-coded desktop video path before it becomes service code. Pin and review dependencies; `requirements.txt` currently contains `ultralytics`, `YOLO`, `pandas`, and `numpy`, with `YOLO` appearing redundant/ambiguous alongside the Ultralytics package and should be verified before expanding the environment.
+### Structure rules
+
+- Camera agent modules should contain agent/task instructions and attach only their own tool. The tool module fixes the camera scope server-side and calls the shared `observations.service`; it must not duplicate camera ingestion or database logic.
+- Intent classification is a regular structured-output LLM call in `planning/classifier.py`, invoked by the outer `workflow/request_flow.py` after guardrails and before CrewAI starts. It returns only one allowed intent label; `planning.validation` verifies the enum before the outer workflow writes it to `state.intent`.
+- After the classifier writes intent to state, the CrewAI Flow always starts and switches among the six configured agents. Each camera agent determines the entity/property from the original message and fills its scoped tool arguments; greetings and clarification agents do not have camera tools.
+- `workflow/request_state.py` holds the full request lifecycle state. `orchestration/state.py` is only the minimal validated projection passed into CrewAI after intent is resolved.
+- `orchestration/registry.py` maps trusted camera ids/intents to known agent constructors. Never import a module or resolve a tool by concatenating model-generated text.
+- The camera worker writes normalized observations. The API and CrewAI tools read them through `observations.service`; the API request does not own a stream-reading loop.
+- Mock and live providers implement the same repository/service interfaces so the agent/tool path remains unchanged when replacing mock data with camera observations.
+- Do not commit model weights, secrets, camera credentials, recordings, or private evaluation frames. Store large model weights in an approved artifact store or deployment volume.
+
+### Current files and migration
+
+The existing `object_detection_YOLO.py` is a local experiment, not yet an ingestion worker. Move/refactor its model invocation into `app/vision/detector.py` only after replacing the hard-coded desktop MP4 path with a configured source adapter. Keep `yolo26n.pt` out of normal source control if it is tracked as a large artifact; document how the worker obtains the approved model weights. Review `requirements.txt`: `YOLO` appears redundant or ambiguous alongside `ultralytics`, and should be checked before dependency expansion.
 
 ## 11. Evaluation and operational metrics
 
