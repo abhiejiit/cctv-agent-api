@@ -1,0 +1,7 @@
+# Ignore an entire directory 
+/venv/
+
+#Ignore the files
+
+# Ignore all files with a specific extension 
+*.env
