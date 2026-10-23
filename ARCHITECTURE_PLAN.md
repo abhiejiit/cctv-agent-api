@@ -501,11 +501,71 @@ Maintain a small, versioned golden set covering direct examples, paraphrases, fo
 
 ## 12. Immediate next steps
 
-1. Agree on MVP question types, household/camera mapping, supported states, and freshness target.
-2. Replace the hard-coded local-video script path with a configurable adapter boundary; keep the current detection demo isolated from request serving.
-3. Build the mock-backed API vertical slice with a CrewAI Flow and observation schema; keep the Flow behind an orchestration interface so application services remain framework-independent.
-4. Add authorization and tenant scoping before persistence or live camera integration.
-5. Validate the confusing hardware claims early: car/object detection is a straightforward first target; door/fan “on/off” needs a state-specific source and evaluation data.
+1. Agree on the first supported entity/property matrix, camera mapping, authentication method, observation freshness target, and retention policy.
+2. Replace the hard-coded local-video path with a configurable source adapter; keep the current detector experiment isolated from HTTP request serving.
+3. Build the mock-backed vertical slice: authenticated `POST /cctv-agent`, request state, guardrails, classifier LLM returning only the six-intent enum, and a CrewAI switch that always invokes the matching agent.
+4. Add MongoDB durable conversations/observations and Redis recent-context caching with tenant scoping and durable-write-first behavior.
+5. Add camera-scoped mock tools, then connect live ingestion and YOLO through the same observation contract.
+6. Validate claims early: car/object presence is the first practical visual feature; door/fan state requires a suitable estimator or sensor.
+
+## 13. First-release architecture review and minimum-scale plan
+
+### End-to-end implementation plan
+
+1. **Define the bounded product surface.** Confirm the six intents, each household's mapping from intent to camera, supported entities/properties for each camera, response language, freshness limit, and how unsupported requests should be handled by `intent_clarify`.
+2. **Create the service foundation.** Build the FastAPI endpoint, authentication/authorization, request validation, correlation id, rate limits, and a typed request state. Keep this as a modular monolith; the API, outer request workflow, CrewAI Flow, and camera tool adapters can ship together.
+3. **Add input guardrails and intent classification.** Guardrails update request state. The separate classifier LLM emits only one of `front_entrance`, `parking`, `back_entrance`, `common_lawn`, `greetings`, or `intent_clarify`. Validate the enum and store it in `state.intent`; if invalid, set `intent_clarify`. Then always invoke the CrewAI Flow.
+4. **Implement the CrewAI switch and six agents.** Use fixed switch branches and a static intent-to-agent registry. Greetings and clarification agents have no camera tools. Each camera agent receives only its own tool and extracts entity/property arguments from the original user message and relevant conversation context.
+5. **Build tools against mock observations.** Tools validate allowed entity/property, guardrail status, tenant/camera access, and freshness. Return typed JSON with camera id, capture time, result, confidence, health, and quality. The agent must answer only from that result.
+6. **Add persistence and context.** MongoDB is the source of truth for conversation messages and normalized observations. Redis caches only a bounded recent context with TTL; load from MongoDB on a cache miss and refresh Redis only after durable writes. Store tenant/user/conversation identifiers in keys and indexes.
+7. **Connect live camera workers.** Run ingestion and inference independently from HTTP requests. Start with a small number of feeds, a shared loaded model, modest configurable frame sampling, bounded per-camera queues, camera health tracking, and latest-observation upserts. Keep event history separate from latest state if temporal questions are needed.
+8. **Measure, then expand.** Evaluate intent routing, tool selection, answer grounding, vision accuracy, camera freshness, model latency/cost, and outage handling against representative examples. Tune capacity from these measurements before adding more cameras or households.
+
+### Minimum-scale deployment hypothesis
+
+This is a sizing hypothesis for an initial pilot, not a capacity guarantee: one region, **5–10 households, up to roughly 20–30 cameras total, and 1–3 concurrent chat requests**. Validate it with the actual camera resolution, sampling rate, YOLO model, and hardware. A reasonable first deployment can use:
+
+- One API application instance with asynchronous request handling and explicit timeouts.
+- One supervised vision worker process/host for a small camera set, loading the detection model once and managing multiple capture tasks with bounded queues. Keep capture/reconnect handling isolated per camera so one bad feed does not take down the others.
+- One small managed MongoDB deployment for conversations, current observations, and optionally TTL-indexed events.
+- One small Redis instance for short-lived recent-context caching; Redis outage should fall back to MongoDB rather than lose history.
+- One LLM provider integration used for the short intent-classification call and the selected agent. No separate model service, broker, Kubernetes cluster, or microservice split is needed for this pilot.
+
+The user count and camera count are not the only sizing variables: video resolution, sampled frames per second, inference hardware, number of active camera feeds, and concurrent LLM/tool calls determine actual capacity. Revisit the hypothesis after load and soak measurements.
+
+### Likely bottlenecks and first-release mitigations
+
+| Bottleneck | Why it matters | First-release mitigation |
+|---|---|---|
+| Two sequential LLM calls for camera questions | Classifier then agent/tool reasoning adds latency and model cost; greetings/clarification also pay the classifier plus agent call | Keep classifier input/output tiny, use a low-latency model, set strict timeouts/token caps, avoid extra LLM guardrail calls by default, and measure p50/p95 by stage. Preserve the required two-stage design. |
+| Synchronous CrewAI work inside the HTTP server | A blocking agent call can occupy a web worker or block the async event loop, reducing request capacity | Use async model/tool calls where supported; otherwise run blocking CrewAI execution in a bounded thread pool. Set per-request deadlines and cap concurrent workflows. |
+| Vision inference across continuously active cameras | Load grows with camera count and frame sampling, independently of chat traffic | Sample frames at a configurable modest rate; load one model per worker rather than per camera; use bounded latest-frame queues and drop superseded frames rather than building backlog. Benchmark each supported state separately. |
+| Slow or disconnected RTSP/NVR feeds | A blocked read or reconnect loop can consume worker capacity and make data stale | Supervise each camera capture task, use read timeouts and backoff, publish camera health, isolate feed failures, and never make the HTTP request own the stream connection. |
+| Stale or overly chatty observation writes | Writing every frame as history increases database churn and makes “latest” lookups harder | Upsert latest state per tenant/camera; write event records only on meaningful changes or at a controlled interval; use compound indexes for tenant/camera/time and retention for events. |
+| LLM tool-call variability and agent loops | Agents may retry or call tools repeatedly, increasing latency and cost | Give each camera agent one narrow tool, enforce a small tool-call limit and total deadline in code, validate tool args, and return clear structured errors. Greetings/clarification agents get no retrieval tools. |
+| MongoDB/Redis consistency | A stale cache can give wrong follow-up context, while treating Redis as durable risks loss | Persist messages to MongoDB first, then refresh Redis with version/TTL; on cache miss or Redis failure read from MongoDB. Use request ids/idempotency handling for retries. |
+| Oversized conversation context | Long histories increase token cost and can distract routing or leak unrelated details | Use a strict context/token budget, include only same-conversation relevant turns, and summarize older context when needed. Never include another household's data. |
+| Camera-specific state claims | Detection confidence may be mistaken for certainty about open/closed or powered on/off | Define supported properties per camera; use explicit thresholds and temporal evidence; abstain when the camera view or model cannot support the claim; prefer device sensors for fan/door state. |
+
+### Improvements to incorporate now
+
+- **Keep the intent enum and agent registry as configuration-backed contracts.** Add startup validation that every camera intent maps to exactly one agent and scoped tool, while greetings/clarification map to tool-free agents.
+- **Resolve a physical camera inside the scoped tool/service.** `front_entrance` selects the agent, while the authenticated household configuration maps that intent to its actual camera id. Do not let the model provide a camera id.
+- **Persist the user turn before long model work.** Store the accepted user message with a request/idempotency key before classification/agent execution, then append the assistant result after completion. Retries should reuse the request key instead of duplicating turns.
+- **Add only the indexes the first read paths need.** Start with conversation messages keyed by tenant/conversation/time and current observations keyed by tenant/camera; add a time index for retained events. Confirm query plans against representative data before adding more index complexity.
+- **Define a unified result envelope for every agent.** Include `intent`, `status`, `answer`, `observation_ids`, `observed_at`, `freshness`, and confidence/quality fields where applicable. Greetings and clarification use the same response shape with no observation ids.
+- **Make the request lifecycle observable.** Record timings for guardrails, classifier, CrewAI agent, tool, MongoDB, and total request; track selected intent, tool-call count, freshness, camera health, and LLM errors without logging raw video or secrets.
+- **Use bounded concurrency and backpressure.** Cap simultaneous LLM workflows and inference work; return a clear temporary-unavailable status when limits are reached instead of accumulating unbounded queues.
+- **Separate “latest state” from “history” at the data-model level.** Current-state questions read a compact latest record; past-period questions use indexed events. Do not query an unbounded event collection for an ordinary “right now” question.
+- **Make first-release fallback behavior explicit.** Classifier failure maps to `intent_clarify` and still enters CrewAI; LLM/provider failure, blocked input, unavailable camera, and stale result each produce a distinct response status without a fabricated observation answer.
+
+### Release gates for this scale
+
+- All six intents reach their matching agent through the CrewAI switch, including malformed classifier output via the safe clarification fallback.
+- Camera tools cannot read across household boundaries and cannot run when guardrail state blocks camera retrieval.
+- For every factual answer, the stored tool result and capture timestamp support the response; stale, unavailable, low-confidence, and unsupported states abstain clearly.
+- The pilot target (households, cameras, concurrency, freshness, and response latency) is met in a short load/soak run on the intended deployment hardware.
+- Camera feed failure, LLM timeout, MongoDB unavailability, and Redis loss have documented and exercised fallback behavior.
 
 ## References
 
