@@ -1,7 +1,11 @@
-# Ignore an entire directory 
-/venv/
-
-#Ignore the files
-
-# Ignore all files with a specific extension 
-*.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+*.pt
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

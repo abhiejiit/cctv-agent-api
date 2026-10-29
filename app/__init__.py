@@ -1,0 +1,1 @@
+"""CCTV Finder API application."""

@@ -1,0 +1,51 @@
+application:
+  name: CCTV Finder Agent
+  environment: development
+  log_level: DEBUG
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  request_timeout_seconds: 45
+
+api:
+  max_message_characters: 2000
+  max_requests_per_minute: 30
+
+auth:
+  # `development` accepts local development identity headers only.
+  # Set to `bearer` outside local development and provide the referenced token
+  # through the process environment. This is a bootstrap authenticator, not an
+  # identity-provider integration.
+  mode: development
+  development_user_id: dev-user
+  development_household_id: demo-household
+  credentials:
+    - token_environment_variable: CCTV_DEMO_BEARER_TOKEN
+      user_id: demo-user
+      household_id: demo-household
+
+guardrails:
+  max_message_characters: 2000
+  blocked_patterns:
+    - category: prompt_injection
+      pattern: '(?i)\bignore\s+(?:all\s+)?(?:previous|prior|system)\s+instructions?\b'
+    - category: prompt_injection
+      pattern: '(?i)\b(?:reveal|print|show|repeat)\s+(?:the\s+)?(?:system|developer)\s+(?:prompt|instructions?)\b'
+    - category: data_exfiltration
+      pattern: '(?i)\b(?:exfiltrate|leak)\s+(?:the\s+)?(?:conversation|system\s+prompt|credentials|secrets)\b'
+    - category: tool_abuse
+      pattern: '(?i)\b(?:run|execute)\s+(?:shell|arbitrary\s+code|a\s+command)\b'
+
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  model: llama3
+  chat_path: /api/chat
+  readiness_path: /api/tags
+  timeout_seconds: 35
+  temperature: 0.0
+  max_output_tokens: 32
+  keep_alive: 5m
+
+camera_catalog_file: configs/cameras.yaml

@@ -1,0 +1,61 @@
+intents:
+  front_entrance:
+    description: Questions about the front entrance, front door, or entry area.
+    aliases: [front entrance, front door, main entrance, entryway]
+    camera_id: demo-front-entrance
+    entities: [door, window, person, vehicle, package]
+    properties:
+      door: [presence, open_closed]
+      window: [presence, open_closed]
+      person: [presence, count]
+      vehicle: [presence, count]
+      package: [presence, count]
+
+  parking:
+    description: Questions about cars, vehicles, or the designated parking area.
+    aliases: [parking, parking lot, car park, driveway]
+    camera_id: demo-parking
+    entities: [person, vehicle, car, motorcycle, bicycle]
+    properties:
+      person: [presence, count]
+      vehicle: [presence, count]
+      car: [presence, count]
+      motorcycle: [presence, count]
+      bicycle: [presence, count]
+
+  back_entrance:
+    description: Questions about the back entrance, rear door, or backyard entry.
+    aliases: [back entrance, rear entrance, back door, rear door]
+    camera_id: demo-back-entrance
+    entities: [door, window, person, vehicle, package]
+    properties:
+      door: [presence, open_closed]
+      window: [presence, open_closed]
+      person: [presence, count]
+      vehicle: [presence, count]
+      package: [presence, count]
+
+  common_lawn:
+    description: Questions about the common lawn, garden, or shared outdoor green area.
+    aliases: [common lawn, lawn, garden, shared yard]
+    camera_id: demo-common-lawn
+    entities: [person, vehicle, animal, package]
+    properties:
+      person: [presence, count]
+      vehicle: [presence, count]
+      animal: [presence, count]
+      package: [presence, count]
+
+  greetings:
+    description: Greetings or brief conversational openings without a camera question.
+    aliases: [hello, hi, hey, good morning, good evening]
+    camera_id: null
+    entities: []
+    properties: {}
+
+  intent_clarify:
+    description: Ambiguous, unsupported, or out-of-scope requests needing clarification or a scope explanation.
+    aliases: []
+    camera_id: null
+    entities: []
+    properties: {}
