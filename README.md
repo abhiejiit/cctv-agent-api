@@ -32,6 +32,9 @@ request limits, authentication mode, and guardrail patterns are in
 model with `CCTV_LLM_BASE_URL` and `CCTV_LLM_MODEL`. Camera intent descriptions and aliases are in
 `configs/cameras.yaml`.
 
+The classifier has a 128-token output budget by default so the model can finish
+the structured JSON response, including both the intent and short reason.
+
 Start the API:
 
 ```bash

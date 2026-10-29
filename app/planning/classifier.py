@@ -54,6 +54,7 @@ class LLMIntentClassifier:
             span.set_attribute("llm.model", self._config.model)
             span.set_attribute("llm.request.timeout_seconds", self._config.timeout_seconds)
             started_at = time.perf_counter()
+            response_data: dict = {}
             logger.debug("LLM classification started model=%s", self._config.model)
             try:
                 response = await self._client.post(
@@ -62,17 +63,28 @@ class LLMIntentClassifier:
                     timeout=self._config.timeout_seconds,
                 )
                 response.raise_for_status()
-                content = response.json()["message"]["content"]
+                parsed_response = response.json()
+                if not isinstance(parsed_response, dict):
+                    raise TypeError("LLM provider response must be a JSON object")
+                response_data = parsed_response
+                content = response_data["message"]["content"]
                 result = parse_intent_classification(content)
                 elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+                done_reason = response_data.get("done_reason", "unknown")
+                output_tokens = response_data.get("eval_count")
                 span.set_attribute("llm.response.intent", result.intent.value)
                 span.set_attribute("llm.response.reason_tokens", len(result.reason.split()))
                 span.set_attribute("llm.response.elapsed_ms", elapsed_ms)
+                span.set_attribute("llm.response.done_reason", str(done_reason))
+                if output_tokens is not None:
+                    span.set_attribute("llm.response.output_tokens", int(output_tokens))
                 logger.info(
-                    "LLM classification completed model=%s intent=%s elapsed_ms=%d",
+                    "LLM classification completed model=%s intent=%s elapsed_ms=%d done_reason=%s output_tokens=%s",
                     self._config.model,
                     result.intent.value,
                     elapsed_ms,
+                    done_reason,
+                    output_tokens if output_tokens is not None else "unknown",
                 )
                 logger.debug("LLM classification reason=%s", result.reason)
                 return result
@@ -81,10 +93,15 @@ class LLMIntentClassifier:
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
                 span.set_attribute("error.type", type(exc).__name__)
                 span.set_attribute("llm.response.elapsed_ms", elapsed_ms)
+                done_reason = response_data.get("done_reason", "unknown")
+                output_tokens = response_data.get("eval_count", "unknown")
+                span.set_attribute("llm.response.done_reason", str(done_reason))
                 logger.warning(
-                    "LLM classification failed model=%s elapsed_ms=%d error_type=%s",
+                    "LLM classification failed model=%s elapsed_ms=%d error_type=%s done_reason=%s output_tokens=%s",
                     self._config.model,
                     elapsed_ms,
                     type(exc).__name__,
+                    done_reason,
+                    output_tokens,
                 )
                 raise LLMClassifierError("Intent classification is temporarily unavailable") from exc

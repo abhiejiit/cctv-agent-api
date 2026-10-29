@@ -45,7 +45,7 @@ llm:
   readiness_path: /api/tags
   timeout_seconds: 35
   temperature: 0.0
-  max_output_tokens: 32
+  max_output_tokens: 128
   keep_alive: 5m
 
 tracing:

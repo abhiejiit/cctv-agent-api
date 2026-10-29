@@ -78,7 +78,7 @@ class LLMConfig(StrictModel):
     readiness_path: str = "/api/tags"
     timeout_seconds: float = Field(default=35, gt=0, le=300)
     temperature: float = Field(default=0.0, ge=0, le=2)
-    max_output_tokens: int = Field(default=32, ge=1, le=512)
+    max_output_tokens: int = Field(default=128, ge=1, le=512)
     keep_alive: str = Field(default="5m", min_length=1, max_length=32)
 
 
