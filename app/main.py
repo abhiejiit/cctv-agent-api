@@ -18,6 +18,7 @@ from app.planning.classifier import LLMIntentClassifier
 from app.security.input_guardrails import InputGuardrails
 from app.security.rate_limits import InMemoryRateLimiter
 from app.telemetry.logging import configure_logging
+from app.telemetry.tracing import configure_tracing, flush_tracing, instrument_http_client
 from app.workflow.request_flow import RequestWorkflow
 
 
@@ -31,21 +32,26 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         timeout = httpx.Timeout(configured_settings.llm.timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            application.state.http_client = client
-            classifier = LLMIntentClassifier(
-                client=client,
-                config=configured_settings.llm,
-                catalog=configured_settings.camera_catalog,
-            )
-            application.state.request_workflow = RequestWorkflow(
-                guardrails=InputGuardrails(configured_settings.guardrails),
-                classifier=classifier,
-            )
-            application.state.rate_limiter = InMemoryRateLimiter(
-                configured_settings.api.max_requests_per_minute
-            )
-            yield
+        provider = application.state.tracer_provider
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                instrument_http_client(client, provider)
+                application.state.http_client = client
+                classifier = LLMIntentClassifier(
+                    client=client,
+                    config=configured_settings.llm,
+                    catalog=configured_settings.camera_catalog,
+                )
+                application.state.request_workflow = RequestWorkflow(
+                    guardrails=InputGuardrails(configured_settings.guardrails),
+                    classifier=classifier,
+                )
+                application.state.rate_limiter = InMemoryRateLimiter(
+                    configured_settings.api.max_requests_per_minute
+                )
+                yield
+        finally:
+            flush_tracing(provider)
 
     application = FastAPI(
         title=configured_settings.application.name,
@@ -53,6 +59,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = configured_settings
+    application.state.tracer_provider = configure_tracing(application, configured_settings.tracing)
 
     @application.middleware("http")
     async def request_id_middleware(request: Request, call_next):

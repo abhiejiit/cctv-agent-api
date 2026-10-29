@@ -38,6 +38,33 @@ Start the API:
 uvicorn app.main:app --reload
 ```
 
+## Jaeger request tracing
+
+Tracing is enabled in `configs/app.yaml` and exports OpenTelemetry traces over
+OTLP/HTTP to `http://localhost:4318/v1/traces`. Start Jaeger locally in a
+separate terminal:
+
+```bash
+docker run --rm --name jaeger \
+  -p 16686:16686 \
+  -p 4317:4317 \
+  -p 4318:4318 \
+  jaegertracing/jaeger:latest
+```
+
+Then start/restart the API, send a request to `/cctv-agent`, and open
+<http://localhost:16686>. In Jaeger, select service `cctv-finder-api`, choose
+operation `POST /cctv-agent`, and search. A trace contains the FastAPI server
+span plus workflow, guardrail, intent-classification, LLM, and outgoing HTTPX
+spans. The request ID is attached as the `cctv.request_id` span attribute.
+
+For an API process running on the host, `localhost:4318` is correct. If the API
+itself runs in a Docker container on the same Docker network as Jaeger, set
+`CCTV_OTLP_ENDPOINT=http://jaeger:4318/v1/traces` (use the Jaeger container or
+service name instead of `localhost`). Set `CCTV_TRACING_ENABLED=false` to turn
+tracing off. Sampling ratio and service name are configurable in
+`configs/app.yaml` under `tracing`.
+
 ## Request
 
 Development mode is enabled by default and uses a local development identity.

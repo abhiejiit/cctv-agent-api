@@ -82,6 +82,14 @@ class LLMConfig(StrictModel):
     keep_alive: str = Field(default="5m", min_length=1, max_length=32)
 
 
+class TracingConfig(StrictModel):
+    enabled: bool = True
+    service_name: str = Field(default="cctv-finder-api", min_length=1, max_length=128)
+    otlp_endpoint: HttpUrl = "http://localhost:4318/v1/traces"
+    sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    export_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+
+
 class CameraIntentConfig(StrictModel):
     description: str = Field(min_length=1, max_length=500)
     aliases: list[str] = Field(default_factory=list)
@@ -123,6 +131,7 @@ class AppSettings(StrictModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     guardrails: GuardrailConfig = Field(default_factory=GuardrailConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    tracing: TracingConfig = Field(default_factory=TracingConfig)
     camera_catalog_file: str = "configs/cameras.yaml"
     camera_catalog: CameraCatalog | None = None
 
@@ -145,6 +154,7 @@ def _apply_environment_overrides(raw: dict) -> dict:
     data = {**raw}
     data["application"] = dict(data.get("application", {}))
     data["llm"] = dict(data.get("llm", {}))
+    data["tracing"] = dict(data.get("tracing", {}))
 
     environment = os.getenv("CCTV_ENVIRONMENT")
     if environment:
@@ -157,6 +167,14 @@ def _apply_environment_overrides(raw: dict) -> dict:
     llm_model = os.getenv("CCTV_LLM_MODEL")
     if llm_model:
         data["llm"]["model"] = llm_model
+
+    tracing_enabled = os.getenv("CCTV_TRACING_ENABLED")
+    if tracing_enabled is not None:
+        data["tracing"]["enabled"] = tracing_enabled.strip().lower() in {"1", "true", "yes", "on"}
+
+    otlp_endpoint = os.getenv("CCTV_OTLP_ENDPOINT")
+    if otlp_endpoint:
+        data["tracing"]["otlp_endpoint"] = otlp_endpoint
 
     return data
 

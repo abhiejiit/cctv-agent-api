@@ -3,6 +3,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, Request
+from opentelemetry import trace
 
 from app.api.schemas import AskRequest, AskResponse
 from app.auth.middleware import get_principal
@@ -22,6 +23,9 @@ async def ask_cctv_agent(
     request: Request,
     principal: Principal = Depends(get_principal),
 ) -> AskResponse:
+    current_span = trace.get_current_span()
+    current_span.set_attribute("cctv.request_id", request.state.request_id)
+    current_span.set_attribute("cctv.user_id", principal.user_id)
     logger.info("CCTV request received request_id=%s user_id=%s", request.state.request_id, principal.user_id)
     limiter: InMemoryRateLimiter = request.app.state.rate_limiter
     await limiter.check(principal.user_id)
@@ -33,6 +37,8 @@ async def ask_cctv_agent(
     )
     workflow: RequestWorkflow = request.app.state.request_workflow
     result = await workflow.run(state)
+    current_span.set_attribute("cctv.intent", result.intent.value)
+    current_span.set_attribute("cctv.workflow_status", result.workflow_status)
 
     return AskResponse(
         request_id=result.request_id,

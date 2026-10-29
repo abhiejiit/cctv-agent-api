@@ -48,4 +48,12 @@ llm:
   max_output_tokens: 32
   keep_alive: 5m
 
+tracing:
+  enabled: true
+  service_name: cctv-finder-api
+  # Jaeger's local OTLP/HTTP receiver. In Docker, use http://jaeger:4318/v1/traces.
+  otlp_endpoint: http://localhost:4318/v1/traces
+  sample_ratio: 1.0
+  export_timeout_seconds: 5
+
 camera_catalog_file: configs/cameras.yaml
