@@ -99,13 +99,30 @@ The `reason` field is a short, user-visible explanation limited to 30
 whitespace-separated tokens. It explains the routing decision without exposing
 private model reasoning.
 
+## LLM input guardrails
+
+After deterministic size/pattern checks and before intent classification, the
+API calls the configured LLM guardrail filter. Its topics and policy are
+configured under `guardrails.llm_filter` in `configs/app.yaml`. The default
+topics are escalation, dispute, and harassment; each topic has a description
+and examples to guide the filter. Edit those settings to adjust the policy or
+topics. Set `enabled: false` to disable the LLM filter.
+
+When the filter flags a request, intent classification is skipped and the API
+returns the common message `we're sorry, we cannot proceed with that`, with
+`status: guardrail_blocked`. If the filter cannot reach the LLM or validate its
+response, the request also stops safely with `status: guardrail_unavailable`;
+the camera intent classifier is not called in either case. A request that
+passes the filter proceeds to the normal intent classifier.
+
 The API supports these intent labels: `front_entrance`, `parking`,
 `back_entrance`, `common_lawn`, `greetings`, `intent_clarify`, and
 `out_of_scope`. A request that spans multiple camera zones, or mixes a camera
 question with an unsupported task, is routed to `intent_clarify`; a wholly
-unrelated request is routed to `out_of_scope`. A blocked
-message is not sent to the LLM and is routed to `intent_clarify`. If the
-configured provider is unavailable or returns an invalid response, the request fails closed to
+unrelated request is routed to `out_of_scope`. Requests blocked by deterministic
+input checks are not sent to either LLM. Requests flagged by the topical LLM
+filter are not sent to intent classification. If the intent classifier is
+unavailable or returns an invalid response, the request fails closed to
 `intent_clarify` with `classification_fallback` status.
 
 Readiness and liveness are available at `/health/ready` and `/health/live`.

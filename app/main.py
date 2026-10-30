@@ -16,6 +16,7 @@ from app.config import AppSettings, load_settings
 from app.errors import register_exception_handlers
 from app.planning.classifier import LLMIntentClassifier
 from app.security.input_guardrails import InputGuardrails
+from app.security.llm_input_filter import LLMInputFilter
 from app.security.rate_limits import InMemoryRateLimiter
 from app.telemetry.logging import configure_logging
 from app.telemetry.tracing import configure_tracing, flush_tracing, instrument_http_client
@@ -42,8 +43,14 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     config=configured_settings.llm,
                     catalog=configured_settings.camera_catalog,
                 )
+                llm_input_filter = LLMInputFilter(
+                    client=client,
+                    llm_config=configured_settings.llm,
+                    filter_config=configured_settings.guardrails.llm_filter,
+                )
                 application.state.request_workflow = RequestWorkflow(
                     guardrails=InputGuardrails(configured_settings.guardrails),
+                    llm_input_filter=llm_input_filter,
                     classifier=classifier,
                 )
                 application.state.rate_limiter = InMemoryRateLimiter(

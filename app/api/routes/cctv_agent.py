@@ -47,5 +47,6 @@ async def ask_cctv_agent(
         status=result.workflow_status,
         guardrail_status=result.guardrail_status,
         guardrail_findings=result.guardrail_findings,
+        guardrail_topics=result.guardrail_topics,
         classification_source=result.classification_source,
     )

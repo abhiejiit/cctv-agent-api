@@ -5,6 +5,7 @@ import logging
 from app.planning.classifier import LLMClassifierError, LLMIntentClassifier
 from app.planning.models import IntentLabel
 from app.security.input_guardrails import InputGuardrails
+from app.security.llm_input_filter import LLMInputFilter, LLMInputGuardrailError
 from app.workflow.request_state import RequestState
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -12,15 +13,18 @@ from opentelemetry.trace import Status, StatusCode
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+GUARDRAIL_END_MESSAGE = "we're sorry, we cannot proceed with that"
 
 
 class RequestWorkflow:
     def __init__(
         self,
         guardrails: InputGuardrails,
+        llm_input_filter: LLMInputFilter,
         classifier: LLMIntentClassifier,
     ) -> None:
         self._guardrails = guardrails
+        self._llm_input_filter = llm_input_filter
         self._classifier = classifier
 
     async def run(self, state: RequestState) -> RequestState:
@@ -56,6 +60,47 @@ class RequestWorkflow:
                 workflow_span.set_attribute("cctv.workflow_status", state.workflow_status)
                 logger.warning("Request blocked by guardrails request_id=%s", state.request_id)
                 return state
+
+            if self._llm_input_filter.enabled:
+                try:
+                    assessment = await self._llm_input_filter.assess(
+                        guardrail_result.normalized_message
+                    )
+                except LLMInputGuardrailError:
+                    # Fail closed: do not run the intent classifier when policy
+                    # evaluation did not complete reliably.
+                    state.guardrail_status = "unavailable"
+                    state.intent = IntentLabel.INTENT_CLARIFY
+                    state.classification_reason = GUARDRAIL_END_MESSAGE
+                    state.classification_source = "guardrail"
+                    state.workflow_status = "guardrail_unavailable"
+                    workflow_span.set_status(Status(StatusCode.ERROR, "guardrail unavailable"))
+                    workflow_span.set_attribute("cctv.guardrail.status", "unavailable")
+                    workflow_span.set_attribute("cctv.intent", state.intent.value)
+                    workflow_span.set_attribute("cctv.workflow_status", state.workflow_status)
+                    logger.warning(
+                        "Request stopped because LLM input guardrail is unavailable request_id=%s",
+                        state.request_id,
+                    )
+                    return state
+
+                state.guardrail_topics = assessment.topics
+                if assessment.flagged:
+                    state.guardrail_status = "blocked"
+                    state.intent = IntentLabel.INTENT_CLARIFY
+                    state.classification_reason = GUARDRAIL_END_MESSAGE
+                    state.classification_source = "guardrail"
+                    state.workflow_status = "guardrail_blocked"
+                    workflow_span.set_attribute("cctv.guardrail.status", "blocked")
+                    workflow_span.set_attribute("cctv.guardrail.topics", assessment.topics)
+                    workflow_span.set_attribute("cctv.intent", state.intent.value)
+                    workflow_span.set_attribute("cctv.workflow_status", state.workflow_status)
+                    logger.info(
+                        "Request blocked by LLM input guardrail request_id=%s topics=%s",
+                        state.request_id,
+                        ",".join(assessment.topics),
+                    )
+                    return state
 
             try:
                 with tracer.start_as_current_span("cctv.intent_classification"):

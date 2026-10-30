@@ -17,9 +17,15 @@ class AskResponse(BaseModel):
     request_id: str
     intent: IntentLabel
     reason: str = Field(min_length=1, max_length=300)
-    status: Literal["classified", "guardrail_blocked", "classification_fallback"]
-    guardrail_status: Literal["allowed", "blocked"]
+    status: Literal[
+        "classified",
+        "guardrail_blocked",
+        "guardrail_unavailable",
+        "classification_fallback",
+    ]
+    guardrail_status: Literal["allowed", "blocked", "unavailable"]
     guardrail_findings: list[str]
+    guardrail_topics: list[str]
     classification_source: Literal["llm", "guardrail", "fallback"]
 
 

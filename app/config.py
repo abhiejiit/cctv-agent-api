@@ -63,9 +63,37 @@ class GuardrailPattern(StrictModel):
         return self
 
 
+class GuardrailTopic(StrictModel):
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{1,31}$")
+    description: str = Field(min_length=1, max_length=500)
+    examples: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("examples")
+    @classmethod
+    def validate_topic_examples(cls, examples: list[str]) -> list[str]:
+        if any(not example or len(example) > 240 for example in examples):
+            raise ValueError("Guardrail topic examples must contain 1 to 240 characters")
+        return examples
+
+
+class LLMInputGuardrailConfig(StrictModel):
+    enabled: bool = True
+    policy: str = Field(min_length=1, max_length=4000)
+    topics: list[GuardrailTopic] = Field(min_length=1, max_length=16)
+    max_output_tokens: int = Field(default=80, ge=16, le=256)
+
+    @model_validator(mode="after")
+    def validate_unique_topics(self) -> "LLMInputGuardrailConfig":
+        topic_names = [topic.name for topic in self.topics]
+        if len(topic_names) != len(set(topic_names)):
+            raise ValueError("LLM input guardrail topic names must be unique")
+        return self
+
+
 class GuardrailConfig(StrictModel):
     max_message_characters: int = Field(default=2000, ge=1, le=8192)
     blocked_patterns: list[GuardrailPattern] = Field(default_factory=list)
+    llm_filter: LLMInputGuardrailConfig
 
 
 class LLMConfig(StrictModel):

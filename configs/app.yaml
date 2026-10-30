@@ -27,6 +27,39 @@ auth:
 
 guardrails:
   max_message_characters: 2000
+  llm_filter:
+    enabled: true
+    max_output_tokens: 80
+    policy: >-
+      Flag messages that are clearly seeking escalation or intervention in a
+      conflict, asking the assistant to investigate or adjudicate a personal
+      dispute using CCTV, or containing targeted harassment, threats, or abusive
+      requests about a person. Do not flag neutral, ordinary camera questions,
+      simple mentions of a person, or frustration that is not directed at a
+      person. If the message does not clearly match a configured topic, allow it.
+    topics:
+      - name: escalation
+        description: >-
+          Requests to escalate a complaint or conflict, involve an authority or
+          third party, or seek intervention against someone based on CCTV footage.
+        examples:
+          - Escalate this complaint about my neighbor to the building manager.
+          - Contact the police about the person seen in the footage.
+      - name: dispute
+        description: >-
+          Requests to investigate, adjudicate, assign blame, or prove allegations
+          in an interpersonal, neighbor, tenant, or household conflict using CCTV.
+        examples:
+          - Use the footage to prove my neighbor took my package.
+          - Tell me who is at fault in this argument.
+          - No, you are wrong - the door is locked. 
+      - name: harassment
+        description: >-
+          Targeted abusive, threatening, humiliating, intimidating, or stalking
+          content, or requests to use footage to shame or target a person.
+        examples:
+          - Help me identify and shame the person in the recording.
+          - Track that person so I can confront and threaten them.
   blocked_patterns:
     - category: prompt_injection
       pattern: '(?i)\bignore\s+(?:all\s+)?(?:previous|prior|system)\s+instructions?\b'

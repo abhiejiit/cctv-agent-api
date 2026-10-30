@@ -15,6 +15,7 @@ class RequestState(BaseModel):
     normalized_message: str = ""
     guardrail_status: str = "pending"
     guardrail_findings: list[str] = Field(default_factory=list)
+    guardrail_topics: list[str] = Field(default_factory=list)
     intent: IntentLabel | None = None
     classification_reason: str | None = None
     classification_source: str | None = None
