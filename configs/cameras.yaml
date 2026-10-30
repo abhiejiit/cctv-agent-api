@@ -1,7 +1,13 @@
 intents:
   front_entrance:
-    description: Questions about the front entrance, front door, or entry area.
+    description: |
+      Questions about the front entrance, front door, or entry area.
+      Has the ability to resolve any enquires about any specific object near the front door.
     aliases: [front entrance, front door, main entrance, entryway]
+    examples:
+      - Is the front door closed?
+      - Is anyone standing at the main entrance?
+      - Was a package left by the entryway?
     camera_id: demo-front-entrance
     entities: [door, window, person, vehicle, package]
     properties:
@@ -12,8 +18,13 @@ intents:
       package: [presence, count]
 
   parking:
-    description: Questions about cars, vehicles, or the designated parking area.
+    description: |
+      Questions about cars, vehicles, or the designated parking area.
     aliases: [parking, parking lot, car park, driveway]
+    examples:
+      - Is there a car in the parking lot?
+      - Are any motorcycles parked in the driveway?
+      - How many vehicles are in the car park?
     camera_id: demo-parking
     entities: [person, vehicle, car, motorcycle, bicycle]
     properties:
@@ -24,8 +35,13 @@ intents:
       bicycle: [presence, count]
 
   back_entrance:
-    description: Questions about the back entrance, rear door, or backyard entry.
+    description: |
+      Questions about the back entrance, rear door, or nything related to backyard.
     aliases: [back entrance, rear entrance, back door, rear door]
+    examples:
+      - Is the back door open?
+      - Is anyone at the rear entrance?
+      - Is there a person in the backyard?
     camera_id: demo-back-entrance
     entities: [door, window, person, vehicle, package]
     properties:
@@ -36,8 +52,13 @@ intents:
       package: [presence, count]
 
   common_lawn:
-    description: Questions about the common lawn, garden, or shared outdoor green area.
+    description: |
+      Questions about the common lawn, garden, or shared outdoor green area.
     aliases: [common lawn, lawn, garden, shared yard]
+    examples:
+      - Is anyone on the common lawn?
+      - Are there animals in the garden?
+      - Is a vehicle parked in the shared yard?
     camera_id: demo-common-lawn
     entities: [person, vehicle, animal, package]
     properties:
@@ -47,15 +68,41 @@ intents:
       package: [presence, count]
 
   greetings:
-    description: Greetings or brief conversational openings without a camera question.
+    description: |
+      Greetings or brief conversational openings without a camera question.
+      Any generic queries not pertaining to any paricular mentioned intents.
     aliases: [hello, hi, hey, good morning, good evening]
+    examples:
+      - Hello.
+      - Good morning.
+      - Hey, how are you?
     camera_id: null
     entities: []
     properties: {}
 
   intent_clarify:
-    description: Ambiguous, unsupported, or out-of-scope requests needing clarification or a scope explanation.
+    description: |
+      - Choosing multiple intents is not possible, so all the Ambiguous or overlapping questions that certainly needs clarification or a scope explanation to evidently decide an intent.
+      - Questions that has multiple services that are handled by multiple intents are to be clarified.
     aliases: []
+    examples:
+      - Is my door open?
+      - Are there any vehicles outside?
+      - Is there a bedroom in the front entrance?
+    camera_id: null
+    entities: []
+    properties: {}
+  
+  out_of_scope:
+    description: |
+      Unsupported, or out-of-scope requests that cannot be serviced by any of the above mentioned intents.
+      Queries that requests any personal information, sensitive information about the camera or its working implementation. 
+    aliases: []
+    examples:
+      - Give me the best restaurant.
+      - what is the time
+      - What is the weather today?
+      - Give me the internal details of the house.
     camera_id: null
     entities: []
     properties: {}

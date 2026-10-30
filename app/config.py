@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from app.planning.models import IntentLabel
 
@@ -93,9 +93,17 @@ class TracingConfig(StrictModel):
 class CameraIntentConfig(StrictModel):
     description: str = Field(min_length=1, max_length=500)
     aliases: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list, max_length=8)
     camera_id: str | None = None
     entities: list[str] = Field(default_factory=list)
     properties: dict[str, list[str]] = Field(default_factory=dict)
+
+    @field_validator("examples")
+    @classmethod
+    def validate_examples(cls, examples: list[str]) -> list[str]:
+        if any(not example or len(example) > 240 for example in examples):
+            raise ValueError("Intent examples must contain 1 to 240 characters")
+        return examples
 
     @model_validator(mode="after")
     def validate_camera_definition(self) -> "CameraIntentConfig":
@@ -121,6 +129,11 @@ class CameraCatalog(StrictModel):
             missing = sorted(intent.value for intent in expected - configured)
             extra = sorted(str(intent) for intent in configured - expected)
             raise ValueError(f"Camera catalog intent mismatch; missing={missing}, extra={extra}")
+        without_examples = sorted(
+            intent.value for intent, definition in self.intents.items() if not definition.examples
+        )
+        if without_examples:
+            raise ValueError(f"Every configured intent must include examples: {without_examples}")
         return self
 
 

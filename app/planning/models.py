@@ -12,6 +12,7 @@ class IntentLabel(str, Enum):
     COMMON_LAWN = "common_lawn"
     GREETINGS = "greetings"
     INTENT_CLARIFY = "intent_clarify"
+    OUT_OF_SCOPE = "out_of_scope"
 
 
 class IntentClassification(BaseModel):
