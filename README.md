@@ -100,7 +100,10 @@ whitespace-separated tokens. It explains the routing decision without exposing
 private model reasoning.
 
 The API supports these intent labels: `front_entrance`, `parking`,
-`back_entrance`, `common_lawn`, `greetings`, and `intent_clarify`. A blocked
+`back_entrance`, `common_lawn`, `greetings`, `intent_clarify`, and
+`out_of_scope`. A request that spans multiple camera zones, or mixes a camera
+question with an unsupported task, is routed to `intent_clarify`; a wholly
+unrelated request is routed to `out_of_scope`. A blocked
 message is not sent to the LLM and is routed to `intent_clarify`. If the
 configured provider is unavailable or returns an invalid response, the request fails closed to
 `intent_clarify` with `classification_fallback` status.

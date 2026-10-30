@@ -25,6 +25,7 @@ intents:
       - Is there a car in the parking lot?
       - Are any motorcycles parked in the driveway?
       - How many vehicles are in the car park?
+      - Are there both cars and motorcycles in the parking lot?
     camera_id: demo-parking
     entities: [person, vehicle, car, motorcycle, bicycle]
     properties:
@@ -88,7 +89,10 @@ intents:
     examples:
       - Is my door open?
       - Are there any vehicles outside?
-      - Is there a bedroom in the front entrance?
+      - Is there a hall in my back entrance?
+      - Is anyone at the front entrance, and is the back door open?
+      - Show me if there's a car in parking and check if the fan's running in the bedroom.
+      - Is the front door closed, and is anyone on the common lawn?
     camera_id: null
     entities: []
     properties: {}
@@ -100,7 +104,7 @@ intents:
     aliases: []
     examples:
       - Give me the best restaurant.
-      - what is the time
+      - What is the time?
       - What is the weather today?
       - Give me the internal details of the house.
     camera_id: null
