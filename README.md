@@ -61,6 +61,26 @@ operation `POST /cctv-agent`, and search. A trace contains the FastAPI server
 span plus workflow, guardrail, intent-classification, LLM, and outgoing HTTPX
 spans. The request ID is attached as the `cctv.request_id` span attribute.
 
+Request-associated Python logs are combined into the readable `debug.logs`
+text attribute on the top-level HTTP request span. Expand the `POST
+/cctv-agent` span and inspect its tags/attributes to see timestamped log lines
+from the guardrail, workflow, and classifier together. The attribute is capped
+at 16,000 characters; older lines are truncated if a request produces more.
+LLM prompt and response capture are
+controlled by `tracing.capture_llm_prompts` and `tracing.capture_llm_outputs`
+in `configs/app.yaml`. With both enabled, inspect the
+`cctv.input_guardrail.llm` and `cctv.llm.classify` spans for
+`llm.prompt.system`, `llm.prompt.user`, and `llm.response.structured`.
+The classifier span also has `llm.response.intent` and
+`llm.response.reason`; `reason` is the short structured rationale returned by
+the classifier, not private model reasoning. These fields can contain user
+messages and model output, so disable prompt/output capture when trace access
+should not include that data.
+
+The capture settings can also be overridden with `CCTV_TRACE_CAPTURE_LOGS`,
+`CCTV_TRACE_CAPTURE_LLM_PROMPTS`, and `CCTV_TRACE_CAPTURE_LLM_OUTPUTS` using
+`true` or `false`.
+
 For an API process running on the host, `localhost:4318` is correct. If the API
 itself runs in a Docker container on the same Docker network as Jaeger, set
 `CCTV_OTLP_ENDPOINT=http://jaeger:4318/v1/traces` (use the Jaeger container or

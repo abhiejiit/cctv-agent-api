@@ -116,6 +116,9 @@ class TracingConfig(StrictModel):
     otlp_endpoint: HttpUrl = "http://localhost:4318/v1/traces"
     sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
     export_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    capture_logs_in_spans: bool = True
+    capture_llm_prompts: bool = False
+    capture_llm_outputs: bool = False
 
 
 class CameraIntentConfig(StrictModel):
@@ -216,6 +219,18 @@ def _apply_environment_overrides(raw: dict) -> dict:
     otlp_endpoint = os.getenv("CCTV_OTLP_ENDPOINT")
     if otlp_endpoint:
         data["tracing"]["otlp_endpoint"] = otlp_endpoint
+
+    capture_overrides = {
+        "CCTV_TRACE_CAPTURE_LOGS": "capture_logs_in_spans",
+        "CCTV_TRACE_CAPTURE_LLM_PROMPTS": "capture_llm_prompts",
+        "CCTV_TRACE_CAPTURE_LLM_OUTPUTS": "capture_llm_outputs",
+    }
+    for environment_name, config_name in capture_overrides.items():
+        environment_value = os.getenv(environment_name)
+        if environment_value is not None:
+            data["tracing"][config_name] = environment_value.strip().lower() in {
+                "1", "true", "yes", "on"
+            }
 
     return data
 

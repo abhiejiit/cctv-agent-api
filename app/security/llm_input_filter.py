@@ -10,7 +10,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.config import LLMConfig, LLMInputGuardrailConfig
+from app.config import LLMConfig, LLMInputGuardrailConfig, TracingConfig
 
 
 logger = logging.getLogger(__name__)
@@ -70,10 +70,12 @@ class LLMInputFilter:
         client: httpx.AsyncClient,
         llm_config: LLMConfig,
         filter_config: LLMInputGuardrailConfig,
+        tracing_config: TracingConfig,
     ) -> None:
         self._client = client
         self._llm_config = llm_config
         self._filter_config = filter_config
+        self._tracing_config = tracing_config
         self.enabled = filter_config.enabled
         self._allowed_topics = {topic.name for topic in filter_config.topics}
         self._system_prompt = build_guardrail_prompt(filter_config)
@@ -97,6 +99,9 @@ class LLMInputFilter:
         with tracer.start_as_current_span("cctv.input_guardrail.llm") as span:
             span.set_attribute("llm.provider", self._llm_config.provider)
             span.set_attribute("llm.model", self._llm_config.model)
+            if self._tracing_config.capture_llm_prompts:
+                span.set_attribute("llm.prompt.system", self._system_prompt)
+                span.set_attribute("llm.prompt.user", message)
             try:
                 response = await self._client.post(
                     f"{str(self._llm_config.base_url).rstrip('/')}{self._llm_config.chat_path}",
@@ -108,9 +113,10 @@ class LLMInputFilter:
                 if not isinstance(provider_result, dict):
                     raise TypeError("LLM provider response must be a JSON object")
 
-                assessment = GuardrailAssessment.model_validate_json(
-                    provider_result["message"]["content"]
-                )
+                content = provider_result["message"]["content"]
+                if self._tracing_config.capture_llm_outputs:
+                    span.set_attribute("llm.response.structured", str(content))
+                assessment = GuardrailAssessment.model_validate_json(content)
                 unexpected_topics = set(assessment.topics) - self._allowed_topics
                 if unexpected_topics:
                     raise ValueError("LLM returned an unconfigured guardrail topic")

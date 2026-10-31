@@ -7,7 +7,7 @@ import time
 
 import httpx
 
-from app.config import CameraCatalog, LLMConfig
+from app.config import CameraCatalog, LLMConfig, TracingConfig
 from app.planning.models import IntentClassification, IntentLabel
 from app.planning.policy import build_system_prompt
 from app.planning.validation import parse_intent_classification
@@ -29,9 +29,11 @@ class LLMIntentClassifier:
         client: httpx.AsyncClient,
         config: LLMConfig,
         catalog: CameraCatalog,
+        tracing_config: TracingConfig,
     ) -> None:
         self._client = client
         self._config = config
+        self._tracing_config = tracing_config
         self._system_prompt = build_system_prompt(catalog)
 
     async def classify(self, message: str) -> IntentClassification:
@@ -53,6 +55,9 @@ class LLMIntentClassifier:
             span.set_attribute("llm.provider", self._config.provider)
             span.set_attribute("llm.model", self._config.model)
             span.set_attribute("llm.request.timeout_seconds", self._config.timeout_seconds)
+            if self._tracing_config.capture_llm_prompts:
+                span.set_attribute("llm.prompt.system", self._system_prompt)
+                span.set_attribute("llm.prompt.user", message)
             started_at = time.perf_counter()
             response_data: dict = {}
             logger.debug("LLM classification started model=%s", self._config.model)
@@ -68,11 +73,14 @@ class LLMIntentClassifier:
                     raise TypeError("LLM provider response must be a JSON object")
                 response_data = parsed_response
                 content = response_data["message"]["content"]
+                if self._tracing_config.capture_llm_outputs:
+                    span.set_attribute("llm.response.structured", str(content))
                 result = parse_intent_classification(content)
                 elapsed_ms = round((time.perf_counter() - started_at) * 1000)
                 done_reason = response_data.get("done_reason", "unknown")
                 output_tokens = response_data.get("eval_count")
                 span.set_attribute("llm.response.intent", result.intent.value)
+                span.set_attribute("llm.response.reason", result.reason)
                 span.set_attribute("llm.response.reason_tokens", len(result.reason.split()))
                 span.set_attribute("llm.response.elapsed_ms", elapsed_ms)
                 span.set_attribute("llm.response.done_reason", str(done_reason))

@@ -10,6 +10,7 @@ from typing import AsyncIterator
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
 
 from app.api.router import router
 from app.config import AppSettings, load_settings
@@ -18,7 +19,7 @@ from app.planning.classifier import LLMIntentClassifier
 from app.security.input_guardrails import InputGuardrails
 from app.security.llm_input_filter import LLMInputFilter
 from app.security.rate_limits import InMemoryRateLimiter
-from app.telemetry.logging import configure_logging
+from app.telemetry.logging import bind_request_log_span, configure_logging, reset_request_log_span
 from app.telemetry.tracing import configure_tracing, flush_tracing, instrument_http_client
 from app.workflow.request_flow import RequestWorkflow
 
@@ -28,7 +29,10 @@ REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
     configured_settings = settings or load_settings()
-    configure_logging(configured_settings.application.log_level)
+    configure_logging(
+        configured_settings.application.log_level,
+        capture_logs_in_spans=configured_settings.tracing.capture_logs_in_spans,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -42,11 +46,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     client=client,
                     config=configured_settings.llm,
                     catalog=configured_settings.camera_catalog,
+                    tracing_config=configured_settings.tracing,
                 )
                 llm_input_filter = LLMInputFilter(
                     client=client,
                     llm_config=configured_settings.llm,
                     filter_config=configured_settings.guardrails.llm_filter,
+                    tracing_config=configured_settings.tracing,
                 )
                 application.state.request_workflow = RequestWorkflow(
                     guardrails=InputGuardrails(configured_settings.guardrails),
@@ -73,6 +79,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         supplied_id = request.headers.get("X-Request-ID", "")
         request_id = supplied_id if REQUEST_ID_PATTERN.fullmatch(supplied_id) else str(uuid.uuid4())
         request.state.request_id = request_id
+        log_context_token = bind_request_log_span(trace.get_current_span())
         try:
             response = await call_next(request)
         except Exception:
@@ -83,6 +90,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     "request_id": request_id,
                 },
             )
+        finally:
+            reset_request_log_span(log_context_token)
         response.headers["X-Request-ID"] = request_id
         return response
 

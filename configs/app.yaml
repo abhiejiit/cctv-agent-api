@@ -88,5 +88,8 @@ tracing:
   otlp_endpoint: http://localhost:4318/v1/traces
   sample_ratio: 1.0
   export_timeout_seconds: 5
+  capture_logs_in_spans: true
+  capture_llm_prompts: true
+  capture_llm_outputs: true
 
 camera_catalog_file: configs/cameras.yaml
