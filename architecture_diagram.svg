@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-labelledby="title description">
+  <title id="title">CCTV Finder Agent architecture</title>
+  <desc id="description">A request flows through the cctv-agent API, authorization, state, input guardrails, intent classifier, CrewAI routing, camera agents and observation tools. Redis and MongoDB provide context and durable records. Camera ingestion updates observations in the background.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#071426"/><stop offset="1" stop-color="#10254a"/></linearGradient>
+    <linearGradient id="request" x1="0" x2="1"><stop stop-color="#38bdf8"/><stop offset="1" stop-color="#2563eb"/></linearGradient>
+    <linearGradient id="llm" x1="0" x2="1"><stop stop-color="#c084fc"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <linearGradient id="agent" x1="0" x2="1"><stop stop-color="#34d399"/><stop offset="1" stop-color="#059669"/></linearGradient>
+    <linearGradient id="data" x1="0" x2="1"><stop stop-color="#fbbf24"/><stop offset="1" stop-color="#f97316"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="9" stdDeviation="10" flood-color="#020617" flood-opacity=".35"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#94a3b8"/></marker>
+    <marker id="arrowBright" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#38bdf8"/></marker>
+    <style>
+      .heading{font:700 28px Arial,sans-serif;fill:#f8fafc}.sub{font:400 14px Arial,sans-serif;fill:#cbd5e1}.label{font:700 15px Arial,sans-serif;fill:#f8fafc}.small{font:400 12px Arial,sans-serif;fill:#dbeafe}.tiny{font:600 11px Arial,sans-serif;fill:#bfdbfe}.section{font:700 13px Arial,sans-serif;fill:#93c5fd;letter-spacing:1.3px}.box{fill:#10213d;stroke:#274566;stroke-width:1.4}.line{fill:none;stroke:#94a3b8;stroke-width:2;marker-end:url(#arrow)}.dash{fill:none;stroke:#64748b;stroke-width:1.7;stroke-dasharray:6 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1600" height="1080" fill="url(#background)"/>
+  <circle cx="1450" cy="110" r="260" fill="#1d4ed8" opacity=".12"/><circle cx="180" cy="1030" r="300" fill="#7c3aed" opacity=".10"/>
+  <text x="70" y="62" class="heading">CCTV Finder Agent</text>
+  <text x="70" y="88" class="sub">Stateful, tool-grounded CCTV question answering architecture</text>
+  <rect x="1290" y="42" width="240" height="38" rx="19" fill="#0b2748" stroke="#1d70a2"/>
+  <circle cx="1314" cy="61" r="6" fill="#34d399"/><text x="1330" y="66" class="tiny">INITIAL ITERATION • MINIMUM SCALE</text>
+
+  <!-- Background camera pipeline -->
+  <rect x="70" y="122" width="1460" height="150" rx="18" fill="#091b33" stroke="#25405f"/>
+  <text x="94" y="151" class="section">BACKGROUND CAMERA PIPELINE</text>
+  <g filter="url(#shadow)">
+    <rect class="box" x="100" y="174" width="196" height="72" rx="12"/><text x="122" y="204" class="label">◉ Cameras / NVR</text><text x="122" y="226" class="small">front • parking • back • lawn</text>
+    <rect class="box" x="370" y="174" width="196" height="72" rx="12"/><text x="392" y="204" class="label">⇣ Ingestion Workers</text><text x="392" y="226" class="small">frames • stream health</text>
+    <rect class="box" x="640" y="174" width="218" height="72" rx="12"/><text x="662" y="204" class="label">◌ Vision + State</text><text x="662" y="226" class="small">detections • occupancy • status</text>
+    <rect x="1065" y="174" width="200" height="72" rx="12" fill="url(#data)" filter="url(#shadow)"/><text x="1088" y="204" class="label">🍃 MongoDB</text><text x="1088" y="226" class="small">observations + history</text>
+  </g>
+  <path d="M296 210H370M566 210H640M858 210H1065" class="line"/>
+
+  <!-- Request entry -->
+  <text x="70" y="319" class="section">SYNCHRONOUS REQUEST PATH</text>
+  <g filter="url(#shadow)">
+    <rect x="70" y="342" width="170" height="90" rx="14" fill="url(#request)"/><text x="94" y="377" class="label">Authenticated</text><text x="94" y="399" class="label">user</text><text x="94" y="418" class="small">natural-language question</text>
+    <rect x="295" y="342" width="214" height="90" rx="14" fill="url(#request)"/><text x="320" y="377" class="label">POST /cctv-agent</text><text x="320" y="400" class="small">auth • authorization</text><text x="320" y="418" class="small">request ID • tracing</text>
+    <rect class="box" x="564" y="342" width="212" height="90" rx="14"/><text x="589" y="377" class="label">Request State</text><text x="589" y="400" class="small">message • user • context</text><text x="589" y="418" class="small">guardrail + intent fields</text>
+  </g>
+  <path d="M240 387H295M509 387H564" stroke="#38bdf8" stroke-width="2.6" fill="none" marker-end="url(#arrowBright)"/>
+
+  <!-- Context -->
+  <g filter="url(#shadow)">
+    <rect x="1040" y="326" width="208" height="54" rx="12" fill="url(#data)"/><text x="1062" y="359" class="label">🔴 Redis context cache</text>
+    <rect x="1040" y="402" width="208" height="54" rx="12" fill="url(#data)"/><text x="1062" y="435" class="label">🍃 MongoDB history</text>
+  </g>
+  <path d="M776 365H970Q985 365 985 353H1040" class="line"/><text x="820" y="352" class="tiny">load last 5 turns</text>
+  <path d="M1144 380V402" class="dash"/><text x="1260" y="395" class="tiny">cache miss</text>
+
+  <!-- Guardrail + classifier -->
+  <g filter="url(#shadow)">
+    <rect x="70" y="504" width="285" height="120" rx="16" fill="#142642" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="94" y="538" class="label">① Input Guardrails</text><text x="94" y="563" class="small">patterns + configurable policy</text><text x="94" y="584" class="small">LLM filter: disputes, escalation,</text><text x="94" y="603" class="small">harassment → block or update state</text>
+    <rect x="432" y="504" width="300" height="120" rx="16" fill="url(#llm)"/>
+    <text x="456" y="538" class="label">② Intent Classifier LLM</text><text x="456" y="563" class="small">direct structured-output call</text><text x="456" y="584" class="small">intent + short routing reason</text><text x="456" y="603" class="small">updates request state</text>
+    <rect class="box" x="808" y="504" width="272" height="120" rx="16"/>
+    <text x="832" y="538" class="label">③ CrewAI Stateful Flow</text><text x="832" y="563" class="small">reads state after classification</text><text x="832" y="584" class="small">switches on intent value</text><text x="832" y="603" class="small">selects one specialised agent</text>
+  </g>
+  <path d="M355 564H432M732 564H808" class="line"/>
+  <path d="M776 410V504" class="dash"/><text x="790" y="468" class="tiny">state flows forward</text>
+
+  <!-- Agents -->
+  <rect x="70" y="680" width="1010" height="190" rx="18" fill="#0a1e38" stroke="#285375"/>
+  <text x="94" y="710" class="section">CREWAI INTENT AGENTS</text>
+  <g filter="url(#shadow)">
+    <rect x="94" y="732" width="142" height="100" rx="12" fill="url(#agent)"/><text x="108" y="764" class="label">Front entrance</text><text x="108" y="786" class="small">door • person</text><text x="108" y="806" class="small">package • visitor</text>
+    <rect x="252" y="732" width="142" height="100" rx="12" fill="url(#agent)"/><text x="289" y="764" class="label">Parking</text><text x="274" y="786" class="small">car • vehicle</text><text x="279" y="806" class="small">occupancy</text>
+    <rect x="410" y="732" width="142" height="100" rx="12" fill="url(#agent)"/><text x="424" y="764" class="label">Back entrance</text><text x="429" y="786" class="small">door • person</text><text x="430" y="806" class="small">activity</text>
+    <rect x="568" y="732" width="142" height="100" rx="12" fill="url(#agent)"/><text x="596" y="764" class="label">Common lawn</text><text x="596" y="786" class="small">person • pet</text><text x="594" y="806" class="small">activity</text>
+    <rect x="726" y="732" width="142" height="100" rx="12" fill="#385173"/><text x="760" y="764" class="label">Greetings</text><text x="750" y="794" class="small">answer without tool</text>
+    <rect x="884" y="732" width="172" height="100" rx="12" fill="#385173"/><text x="906" y="764" class="label">Intent clarify</text><text x="905" y="794" class="small">ask one focused question</text>
+  </g>
+  <path d="M944 624V680" class="line"/>
+
+  <!-- Tool + response -->
+  <g filter="url(#shadow)">
+    <rect x="1150" y="520" width="310" height="104" rx="16" fill="#10213d" stroke="#34d399" stroke-width="1.5"/>
+    <text x="1176" y="554" class="label">Intent-scoped Camera Tools</text><text x="1176" y="579" class="small">fetch_parking_details(entity)</text><text x="1176" y="600" class="small">fetch_front_entrance_details(entity)</text>
+    <rect x="1150" y="690" width="310" height="104" rx="16" fill="#10213d" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="1176" y="724" class="label">Observation Service</text><text x="1176" y="749" class="small">latest tailored camera JSON</text><text x="1176" y="770" class="small">grounded tool response</text>
+    <rect x="1150" y="868" width="310" height="92" rx="16" fill="url(#request)"/>
+    <text x="1176" y="902" class="label">Validated API Response</text><text x="1176" y="927" class="small">answer matches user tone + language</text>
+  </g>
+  <path d="M1080 776H1110Q1130 776 1130 572H1150" class="line"/>
+  <path d="M1305 624V690" class="line"/><path d="M1305 794V868" class="line"/>
+  <path d="M1150 742H1100Q1080 742 1080 810H1056" class="dash"/><text x="1088" y="828" class="tiny">tool JSON → agent answer</text>
+  <path d="M1265 246V520" class="dash"/><text x="1277" y="392" class="tiny">read latest</text>
+
+  <!-- Persistence -->
+  <path d="M1305 960V1000H1144V456" class="dash"/>
+  <text x="1170" y="996" class="tiny">persist turn • refresh cache</text>
+  <text x="70" y="1014" class="sub">Design principle: classify once, select one bounded agent, require a camera tool for camera claims, and retain auditable request traces.</text>
+  <g transform="translate(70 1040)"><rect width="14" height="14" rx="3" fill="url(#request)"/><text x="21" y="12" class="tiny">API / state</text><rect x="128" width="14" height="14" rx="3" fill="url(#llm)"/><text x="149" y="12" class="tiny">LLM</text><rect x="204" width="14" height="14" rx="3" fill="url(#agent)"/><text x="225" y="12" class="tiny">CrewAI agent</text><rect x="340" width="14" height="14" rx="3" fill="url(#data)"/><text x="361" y="12" class="tiny">Data store</text></g>
+</svg>
