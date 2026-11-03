@@ -73,11 +73,11 @@ guardrails:
 llm:
   provider: ollama
   base_url: http://localhost:11434
-  model: qwen3:8b
-  thinking_model: true
-  # Structured guardrail and intent calls need JSON in message.content.
-  think: true
-  chat_path: /api/chat
+  model: llama3
+  thinking_model: false
+  # Enable Qwen3 reasoning for the intent classifier's structured response.
+  think: false
+  chat_path: /api/chat 
   readiness_path: /api/tags
   timeout_seconds: 35
   temperature: 0.0
@@ -96,6 +96,72 @@ guardrail_llm:
   temperature: 0.0
   max_output_tokens: 128
   keep_alive: 5m
+
+crewai:
+  agents:
+    front_entrance:
+      role: Front Entrance Intent Agent
+      goal: Acknowledge that the request was routed to the front entrance agent.
+      backstory: You handle requests classified for the front entrance camera region.
+      instructions: Respond only with the configured acknowledgement. Do not answer the underlying camera question or claim to have inspected footage.
+      examples:
+        - User asks whether the front door is closed.
+        - User asks whether a person is by the front entrance.
+      expected_reply: "Hey, you've chosen the front entrance."
+    parking:
+      role: Parking Intent Agent
+      goal: Acknowledge that the request was routed to the parking agent.
+      backstory: You handle requests classified for the parking camera region.
+      instructions: Respond only with the configured acknowledgement. Do not answer the underlying camera question or claim to have inspected footage.
+      examples:
+        - User asks whether a car is in the parking lot.
+        - User asks how many vehicles are parked.
+      expected_reply: "Hey, you've chosen parking."
+    back_entrance:
+      role: Back Entrance Intent Agent
+      goal: Acknowledge that the request was routed to the back entrance agent.
+      backstory: You handle requests classified for the back entrance camera region.
+      instructions: Respond only with the configured acknowledgement. Do not answer the underlying camera question or claim to have inspected footage.
+      examples:
+        - User asks whether the back door is open.
+        - User asks whether anyone is at the rear entrance.
+      expected_reply: "Hey, you've chosen the back entrance."
+    common_lawn:
+      role: Common Lawn Intent Agent
+      goal: Acknowledge that the request was routed to the common lawn agent.
+      backstory: You handle requests classified for the common lawn camera region.
+      instructions: Respond only with the configured acknowledgement. Do not answer the underlying camera question or claim to have inspected footage.
+      examples:
+        - User asks whether anyone is on the common lawn.
+        - User asks whether an animal is in the garden.
+      expected_reply: "Hey, you've chosen the common lawn."
+    greetings:
+      role: Greetings Agent
+      goal: Acknowledge a greeting routed to the greetings agent.
+      backstory: You handle brief greetings and conversational openings.
+      instructions: Respond only with the configured acknowledgement. Do not start an unrelated conversation.
+      examples:
+        - User says hello.
+        - User says good morning.
+      expected_reply: "Hey, you've chosen greetings."
+    intent_clarify:
+      role: Clarification Agent
+      goal: Acknowledge that the request was routed for clarification.
+      backstory: You handle requests whose location or scope needs clarification.
+      instructions: Respond only with the configured acknowledgement for this initial routing slice. Do not answer the underlying camera question.
+      examples:
+        - User asks whether my door is open without naming a location.
+        - User asks about multiple camera regions in one request.
+      expected_reply: "Hey, you've chosen intent clarification."
+    out_of_scope:
+      role: Out of Scope Agent
+      goal: Acknowledge that the request is outside supported CCTV intents.
+      backstory: You handle requests classified outside the supported CCTV camera intents.
+      instructions: Respond only with the configured acknowledgement. Do not attempt the unrelated request.
+      examples:
+        - User asks for the weather.
+        - User asks for a restaurant recommendation.
+      expected_reply: "This request is outside the CCTV assistant's supported scope."
 
 tracing:
   enabled: true

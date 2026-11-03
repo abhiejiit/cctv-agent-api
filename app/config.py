@@ -112,6 +112,29 @@ class LLMConfig(StrictModel):
     keep_alive: str = Field(default="5m", min_length=1, max_length=32)
 
 
+class IntentAgentConfig(StrictModel):
+    role: str = Field(min_length=1, max_length=160)
+    goal: str = Field(min_length=1, max_length=500)
+    backstory: str = Field(min_length=1, max_length=1000)
+    instructions: str = Field(min_length=1, max_length=2000)
+    examples: list[str] = Field(min_length=1, max_length=12)
+    expected_reply: str = Field(min_length=1, max_length=300)
+
+
+class CrewAIConfig(StrictModel):
+    agents: dict[IntentLabel, IntentAgentConfig]
+
+    @model_validator(mode="after")
+    def validate_agent_set(self) -> "CrewAIConfig":
+        expected = set(IntentLabel)
+        configured = set(self.agents)
+        if configured != expected:
+            missing = sorted(intent.value for intent in expected - configured)
+            extra = sorted(intent.value for intent in configured - expected)
+            raise ValueError(f"CrewAI agent configuration mismatch; missing={missing}, extra={extra}")
+        return self
+
+
 class TracingConfig(StrictModel):
     enabled: bool = True
     service_name: str = Field(default="cctv-finder-api", min_length=1, max_length=128)
@@ -178,6 +201,7 @@ class AppSettings(StrictModel):
     guardrails: GuardrailConfig = Field(default_factory=GuardrailConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     guardrail_llm: LLMConfig = Field(default_factory=LLMConfig)
+    crewai: CrewAIConfig
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     camera_catalog_file: str = "configs/cameras.yaml"
     camera_catalog: CameraCatalog | None = None
