@@ -73,7 +73,23 @@ guardrails:
 llm:
   provider: ollama
   base_url: http://localhost:11434
+  model: qwen3:8b
+  thinking_model: true
+  # Structured guardrail and intent calls need JSON in message.content.
+  think: true
+  chat_path: /api/chat
+  readiness_path: /api/tags
+  timeout_seconds: 35
+  temperature: 0.0
+  max_output_tokens: 512
+  keep_alive: 5m
+
+guardrail_llm:
+  provider: ollama
+  base_url: http://localhost:11434
   model: llama3
+  thinking_model: false
+  think: false
   chat_path: /api/chat
   readiness_path: /api/tags
   timeout_seconds: 35

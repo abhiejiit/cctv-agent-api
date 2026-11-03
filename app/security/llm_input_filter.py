@@ -95,10 +95,14 @@ class LLMInputFilter:
                 "num_predict": self._filter_config.max_output_tokens,
             },
         }
+        if self._llm_config.thinking_model:
+            payload["think"] = self._llm_config.think
 
         with tracer.start_as_current_span("cctv.input_guardrail.llm") as span:
             span.set_attribute("llm.provider", self._llm_config.provider)
             span.set_attribute("llm.model", self._llm_config.model)
+            span.set_attribute("llm.thinking_model", self._llm_config.thinking_model)
+            span.set_attribute("llm.think", self._llm_config.think)
             if self._tracing_config.capture_llm_prompts:
                 span.set_attribute("llm.prompt.system", self._system_prompt)
                 span.set_attribute("llm.prompt.user", message)
@@ -113,9 +117,24 @@ class LLMInputFilter:
                 if not isinstance(provider_result, dict):
                     raise TypeError("LLM provider response must be a JSON object")
 
-                content = provider_result["message"]["content"]
+                message_data = provider_result["message"]
+                content = message_data["content"]
+                thinking = message_data.get("thinking", "")
+                if thinking:
+                    span.set_attribute("llm.response.thinking_present", True)
+                    logger.debug(
+                        "LLM input guardrail returned model thinking model=%s characters=%d",
+                        self._llm_config.model,
+                        len(thinking),
+                    )
                 if self._tracing_config.capture_llm_outputs:
                     span.set_attribute("llm.response.structured", str(content))
+                if not content or not content.strip():
+                    logger.warning(
+                        "LLM input guardrail returned empty structured content model=%s thinking_chars=%d; set llm.think=false for JSON guardrails",
+                        self._llm_config.model,
+                        len(thinking),
+                    )
                 assessment = GuardrailAssessment.model_validate_json(content)
                 unexpected_topics = set(assessment.topics) - self._allowed_topics
                 if unexpected_topics:
@@ -129,6 +148,21 @@ class LLMInputFilter:
                     ",".join(assessment.topics) or "none",
                 )
                 return assessment
+            except httpx.HTTPStatusError as exc:
+                provider_body = exc.response.text[:500].replace("\n", " ")
+                span.set_status(Status(StatusCode.ERROR, "guardrail llm http error"))
+                span.set_attribute("error.type", type(exc).__name__)
+                span.set_attribute("llm.response.status_code", exc.response.status_code)
+                span.set_attribute("llm.response.error", provider_body)
+                logger.error(
+                    "LLM input guardrail provider rejected model=%s status=%d body=%s",
+                    self._llm_config.model,
+                    exc.response.status_code,
+                    provider_body,
+                )
+                raise LLMInputGuardrailError(
+                    "Input policy evaluation is temporarily unavailable"
+                ) from exc
             except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
                 span.set_attribute("error.type", type(exc).__name__)

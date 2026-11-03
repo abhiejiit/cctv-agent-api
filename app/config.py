@@ -102,6 +102,8 @@ class LLMConfig(StrictModel):
     provider: Literal["ollama"] = "ollama"
     base_url: HttpUrl = "http://localhost:11434"
     model: str = Field(default="llama3.2:3b", min_length=1, max_length=128)
+    thinking_model: bool = False
+    think: bool = False
     chat_path: str = "/api/chat"
     readiness_path: str = "/api/tags"
     timeout_seconds: float = Field(default=35, gt=0, le=300)
@@ -175,6 +177,7 @@ class AppSettings(StrictModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     guardrails: GuardrailConfig = Field(default_factory=GuardrailConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    guardrail_llm: LLMConfig = Field(default_factory=LLMConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     camera_catalog_file: str = "configs/cameras.yaml"
     camera_catalog: CameraCatalog | None = None
@@ -211,6 +214,11 @@ def _apply_environment_overrides(raw: dict) -> dict:
     llm_model = os.getenv("CCTV_LLM_MODEL")
     if llm_model:
         data["llm"]["model"] = llm_model
+
+    guardrail_llm_model = os.getenv("CCTV_GUARDRAIL_LLM_MODEL")
+    if guardrail_llm_model:
+        data["guardrail_llm"] = dict(data.get("guardrail_llm", {}))
+        data["guardrail_llm"]["model"] = guardrail_llm_model
 
     tracing_enabled = os.getenv("CCTV_TRACING_ENABLED")
     if tracing_enabled is not None:

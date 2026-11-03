@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -29,6 +30,14 @@ REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
     configured_settings = settings or load_settings()
+    logging.getLogger(__name__).info(
+        "Effective LLM configuration classifier=%s thinking_model=%s think=%s guardrail=%s",
+        configured_settings.llm.provider,
+        configured_settings.llm.model,
+        configured_settings.llm.thinking_model,
+        configured_settings.llm.think,
+        configured_settings.guardrail_llm.model,
+    )
     configure_logging(
         configured_settings.application.log_level,
         capture_logs_in_spans=configured_settings.tracing.capture_logs_in_spans,
@@ -36,7 +45,9 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        timeout = httpx.Timeout(configured_settings.llm.timeout_seconds)
+        timeout = httpx.Timeout(
+            max(configured_settings.llm.timeout_seconds, configured_settings.guardrail_llm.timeout_seconds)
+        )
         provider = application.state.tracer_provider
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -50,7 +61,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 )
                 llm_input_filter = LLMInputFilter(
                     client=client,
-                    llm_config=configured_settings.llm,
+                    llm_config=configured_settings.guardrail_llm,
                     filter_config=configured_settings.guardrails.llm_filter,
                     tracing_config=configured_settings.tracing,
                 )

@@ -81,6 +81,31 @@ The capture settings can also be overridden with `CCTV_TRACE_CAPTURE_LOGS`,
 `CCTV_TRACE_CAPTURE_LLM_PROMPTS`, and `CCTV_TRACE_CAPTURE_LLM_OUTPUTS` using
 `true` or `false`.
 
+The classifier and guardrail can use separate Ollama configurations. The
+classifier can use Qwen3 reasoning while the guardrail stays deterministic:
+
+```yaml
+# Main intent classifier
+llm:
+  model: qwen3:8b
+thinking_model: true
+think: true
+
+# Input guardrail
+guardrail_llm:
+  model: llama3
+  thinking_model: false
+  think: false
+```
+
+The API sends the `think` field only when `thinking_model` is enabled. The
+guardrail uses `guardrail_llm`, while intent classification uses `llm`. If a
+provider returns a separate `message.thinking` field, the classifier trace
+records `llm.response.thinking_present` and the application log records its
+character count. Private reasoning text is not copied into logs or traces; the
+classifier's concise structured `reason` field remains available for routing
+diagnostics.
+
 For an API process running on the host, `localhost:4318` is correct. If the API
 itself runs in a Docker container on the same Docker network as Jaeger, set
 `CCTV_OTLP_ENDPOINT=http://jaeger:4318/v1/traces` (use the Jaeger container or
