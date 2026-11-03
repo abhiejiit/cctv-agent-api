@@ -33,10 +33,12 @@ guardrails:
     policy: >-
       Flag messages that are clearly seeking escalation or intervention in a
       conflict, asking the assistant to investigate or adjudicate a personal
-      dispute using CCTV, or containing targeted harassment, threats, or abusive
-      requests about a person. Do not flag neutral, ordinary camera questions,
-      simple mentions of a person, or frustration that is not directed at a
-      person. If the message does not clearly match a configured topic, allow it.
+      dispute using CCTV, containing targeted harassment, threats, or abusive
+      requests about a person, or requesting deletion, alteration, concealment,
+      or disabling of CCTV footage or recordings. Do not flag neutral, ordinary
+      camera questions, simple mentions of a person, or frustration that is not
+      directed at a person. If the message does not clearly match a configured
+      topic, allow it.
     topics:
       - name: escalation
         description: >-
@@ -60,6 +62,17 @@ guardrails:
         examples:
           - Help me identify and shame the person in the recording.
           - Track that person so I can confront and threaten them.
+      - name: footage_tampering
+        description: >-
+          Requests to delete, erase, alter, edit, overwrite, hide, or conceal
+          CCTV footage, camera recordings, clips, or evidence, or to disable
+          recording or bypass footage retention and audit controls.
+        examples:
+          - Delete the CCTV footage from last night.
+          - Erase the recording of someone entering the property.
+          - Edit the camera clip so it does not show what happened.
+          - Hide the footage from the building manager.
+          - Turn off recording before I move the package.
   blocked_patterns:
     - category: prompt_injection
       pattern: '(?i)\bignore\s+(?:all\s+)?(?:previous|prior|system)\s+instructions?\b'
@@ -69,6 +82,8 @@ guardrails:
       pattern: '(?i)\b(?:exfiltrate|leak)\s+(?:the\s+)?(?:conversation|system\s+prompt|credentials|secrets)\b'
     - category: tool_abuse
       pattern: '(?i)\b(?:run|execute)\s+(?:shell|arbitrary\s+code|a\s+command)\b'
+    - category: footage_tampering
+      pattern: '(?i)(?:\b(?:delete|erase|remove|wipe|destroy|overwrite|alter|edit|modify|hide|conceal|tamper(?:\s+with)?|disable|turn\s+off|stop)\b.{0,100}\b(?:cctv|camera|security)?\s*(?:footage|recordings?|videos?|clips?|evidence|recording)\b|\b(?:footage|recordings?|videos?|clips?|evidence|recording)\b.{0,100}\b(?:delete|erase|remove|wipe|destroy|overwrite|alter|edit|modify|hide|conceal|tamper(?:\s+with)?|disable|turn\s+off|stop)\b)'
 
 llm:
   provider: ollama
@@ -98,6 +113,7 @@ guardrail_llm:
   keep_alive: 5m
 
 crewai:
+  verbose: true
   agents:
     front_entrance:
       role: Front Entrance Intent Agent
