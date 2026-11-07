@@ -126,5 +126,7 @@ tracing:
   capture_logs_in_spans: true
   capture_llm_prompts: true
   capture_llm_outputs: true
+  capture_tool_inputs: true
+  capture_tool_outputs: true
 
 camera_catalog_file: configs/cameras.yaml

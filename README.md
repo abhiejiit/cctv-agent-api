@@ -45,11 +45,23 @@ registry in `app/orchestration/camera_tools.py`; YAML cannot import or execute
 arbitrary code. Each function declares its input types, so CrewAI fills tool
 arguments such as `entity` from the user's question when it calls the function.
 
-These functions currently return representative mock JSON and do not connect to
-live camera footage. Tool calls and arguments are logged in the CrewAI span. The
-prototype agent still returns the configured acknowledgement after a tool call;
-edit `expected_reply` in `configs/agent.yaml` to change it. Set `crewai.verbose`
-in `configs/app.yaml` to enable CrewAI's console diagnostics. The file path is
+Each tool is a Python function in `app/orchestration/camera_tools.py`. It
+validates its inputs with its dedicated Pydantic schema from
+`app/orchestration/tool_schemas.py`, then calls the camera data service through
+`app/services/camera_service_provider.py`. The provider currently returns
+`MockCameraDataService` from `app/services/mock_camera_data_service.py`, which
+returns YOLO-shaped JSON with camera ID, capture time, detected class,
+confidence, bounding box, and attributes. Replacing the provider with a live
+`CameraDataService` implementation will leave the agent tools and their schemas
+unchanged. Camera agents read the service JSON and answer the user's question
+from it. Each agent also has a configurable `capabilities` list. When a camera
+agent cannot resolve a request from its tool result, it politely explains the
+limit and offers only its listed capabilities. The greetings agent responds
+only with the capability menu so the user can choose a supported question.
+Tool names, validated inputs, and result summaries are logged in the CrewAI
+span. Greetings, clarification, and out-of-scope agents have no tools. Set
+`crewai.verbose` in
+`configs/app.yaml` to enable CrewAI's console diagnostics. The file path is
 selected by `agent_config_file` in `configs/app.yaml`.
 
 The classifier has a 512-token output budget by default so the model can finish
@@ -87,8 +99,27 @@ text attribute on the top-level HTTP request span. Expand the `POST
 from the guardrail, workflow, and classifier together. The attribute is capped
 at 16,000 characters; older lines are truncated if a request produces more.
 CrewAI route, kickoff, and completion logs are also attached to the
-`cctv.crewai.intent_agent` span under the same `debug.logs` attribute, alongside
-agent role, intent, elapsed time, and final configured reply attributes.
+`cctv.crewai.intent_agent` span under the same `debug.logs` attribute. Expand
+that span to inspect agent role, goal, backstory, instructions, examples,
+capabilities, configured tools and their Pydantic schemas, model settings,
+execution time, step count, token usage when returned by CrewAI, and final answer.
+When prompt capture is enabled, the `cctv.crewai.task.execute` child span also
+shows the complete task description and user input.
+
+Each tool call creates a child span named
+`cctv.crewai.tool.<tool_name>`. The child span contains the validated input under
+`crewai.tool.input.json`, the full service response under
+`crewai.tool.output.json`, camera ID, data source, duration, response size, and
+success/error details. The latest tool input and response are also copied onto
+the parent intent-agent span as `crewai.tool.last.input.json` and
+`crewai.tool.last.output.json`. Agent step spans/logs record selected tool,
+arguments, tool result, and final output; private reasoning text is not
+captured. Tool payload capture is controlled by
+`tracing.capture_tool_inputs` and `tracing.capture_tool_outputs` in
+`configs/app.yaml` (both enabled in the current configuration). Large tool
+payloads are capped at 12,000 characters per span attribute, with truncation
+recorded explicitly.
+
 LLM prompt and response capture are
 controlled by `tracing.capture_llm_prompts` and `tracing.capture_llm_outputs`
 in `configs/app.yaml`. With both enabled, inspect the
@@ -101,7 +132,8 @@ messages and model output, so disable prompt/output capture when trace access
 should not include that data.
 
 The capture settings can also be overridden with `CCTV_TRACE_CAPTURE_LOGS`,
-`CCTV_TRACE_CAPTURE_LLM_PROMPTS`, and `CCTV_TRACE_CAPTURE_LLM_OUTPUTS` using
+`CCTV_TRACE_CAPTURE_LLM_PROMPTS`, `CCTV_TRACE_CAPTURE_LLM_OUTPUTS`,
+`CCTV_TRACE_CAPTURE_TOOL_INPUTS`, and `CCTV_TRACE_CAPTURE_TOOL_OUTPUTS` using
 `true` or `false`.
 
 The classifier and guardrail can use separate Ollama configurations. The

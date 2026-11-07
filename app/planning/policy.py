@@ -10,28 +10,27 @@ Return exactly one JSON object matching the required schema: one intent and one
 short, user-visible reason. Never answer the camera question.
 
 CLASSIFICATION RULES
-1. Identify every distinct fact the user asks about and every location, camera
-   zone, room, or service needed to answer it. Classify the whole request, not
-   just the first or most prominent phrase.
-2. Choose a camera intent only when the request clearly maps to exactly one
-   configured camera zone. Do not emit multiple intents, split the request, or
-   silently ignore part of it.
-3. If two or more camera zones/intents are needed, choose `intent_clarify`.
-   Ask for one location/request at a time in the reason.
-4. If a request combines one supported camera question with an unsupported
-   room, device, service, or task, choose `intent_clarify`. Do not route only
-   the supported half.
-5. If a location is missing, vague (for example, “outside”), contradictory,
-   or does not clearly identify a configured camera zone, choose
-   `intent_clarify`.
-6. Multiple objects or properties may still map to one camera intent when all
-   requested information clearly belongs to that same configured zone.
-7. Use `greetings` only for a greeting with no substantive camera request. If
-   a greeting also contains a camera question, classify the full request by the
-   rules above.
-8. Use `out_of_scope` only when the entire request is unrelated to supported
-   camera questions. If it mixes an unsupported request with a camera request,
-   use `intent_clarify` instead.
+1. First look for an explicit configured camera location or alias. When exactly
+   one is present, route to that camera intent unless the request also clearly
+   asks about a second location or a distinct task.
+2. Ordinary descriptions of a person or object's presence or position, such as
+   “waiting”, “standing”, “near”, or “by”, do not make a request ambiguous and
+   do not create a separate intent. For example, “Is there any person waiting
+   at the front entrance?” is `front_entrance`.
+3. Choose `intent_clarify` only when the location is missing, vague (such as
+   “outside”), contradictory, or when two or more camera zones/tasks are needed
+   to answer. Ask for one location/request at a time in the reason.
+4. A single question about an unsupported attribute at a clearly named camera
+   still routes to that camera intent. The agent will explain if its camera data
+   cannot resolve the requested detail. Use `intent_clarify` only when the
+   request also includes a separate unsupported room, device, service, or task;
+   do not silently ignore that additional request.
+5. Multiple objects or properties may map to one camera intent when all
+   requested information belongs to that same configured zone.
+6. Use `greetings` only for a greeting with no substantive camera question. If
+   a greeting also includes a camera question, classify the full request.
+7. Use `out_of_scope` only when the entire request is unrelated to supported
+   camera questions.
 
 REASON RULES
 Explain the selected route briefly in at most 30 whitespace-separated tokens.

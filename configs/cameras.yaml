@@ -7,6 +7,8 @@ intents:
     examples:
       - Is the front door closed?
       - Is anyone standing at the main entrance?
+      - Is there any person waiting at the front entrance?
+      - Is someone near the front door?
       - Was a package left by the entryway?
     camera_id: demo-front-entrance
     entities: [door, window, person, vehicle, package]

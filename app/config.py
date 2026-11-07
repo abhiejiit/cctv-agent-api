@@ -125,9 +125,10 @@ class IntentAgentConfig(StrictModel):
     role: str = Field(min_length=1, max_length=160)
     goal: str = Field(min_length=1, max_length=500)
     backstory: str = Field(min_length=1, max_length=1000)
-    instructions: str = Field(min_length=1, max_length=2000)
+    instructions: str = Field(min_length=1, max_length=4000)
     examples: list[str] = Field(min_length=1, max_length=12)
-    expected_reply: str = Field(min_length=1, max_length=300)
+    expected_reply: str | None = Field(default=None, min_length=1, max_length=300)
+    capabilities: list[str] = Field(default_factory=list, max_length=12)
     tools_enabled: bool = False
     tools: list[str] = Field(default_factory=list, max_length=8)
 
@@ -174,6 +175,8 @@ class TracingConfig(StrictModel):
     capture_logs_in_spans: bool = True
     capture_llm_prompts: bool = False
     capture_llm_outputs: bool = False
+    capture_tool_inputs: bool = True
+    capture_tool_outputs: bool = True
 
 
 class CameraIntentConfig(StrictModel):
@@ -287,6 +290,8 @@ def _apply_environment_overrides(raw: dict) -> dict:
         "CCTV_TRACE_CAPTURE_LOGS": "capture_logs_in_spans",
         "CCTV_TRACE_CAPTURE_LLM_PROMPTS": "capture_llm_prompts",
         "CCTV_TRACE_CAPTURE_LLM_OUTPUTS": "capture_llm_outputs",
+        "CCTV_TRACE_CAPTURE_TOOL_INPUTS": "capture_tool_inputs",
+        "CCTV_TRACE_CAPTURE_TOOL_OUTPUTS": "capture_tool_outputs",
     }
     for environment_name, config_name in capture_overrides.items():
         environment_value = os.getenv(environment_name)

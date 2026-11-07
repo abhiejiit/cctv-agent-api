@@ -69,6 +69,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 agent_router = IntentAgentRouter(
                     config=configured_settings.crewai,
                     llm_config=configured_settings.llm,
+                    tracing_config=configured_settings.tracing,
                 )
                 application.state.request_workflow = RequestWorkflow(
                     guardrails=InputGuardrails(configured_settings.guardrails),
