@@ -14,6 +14,15 @@ from app.planning.models import IntentLabel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+AVAILABLE_AGENT_TOOLS = frozenset(
+    {
+        "fetch_front_entrance_details",
+        "fetch_parking_details",
+        "get_parking_occupancy",
+        "fetch_back_entrance_details",
+        "fetch_common_lawn_details",
+    }
+)
 
 
 class StrictModel(BaseModel):
@@ -119,15 +128,36 @@ class IntentAgentConfig(StrictModel):
     instructions: str = Field(min_length=1, max_length=2000)
     examples: list[str] = Field(min_length=1, max_length=12)
     expected_reply: str = Field(min_length=1, max_length=300)
+    tools_enabled: bool = False
+    tools: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("tools")
+    @classmethod
+    def validate_unique_tools(cls, tools: list[str]) -> list[str]:
+        if len(tools) != len(set(tools)):
+            raise ValueError("Agent tool names must be unique")
+        return tools
+
+    @model_validator(mode="after")
+    def validate_tool_configuration(self) -> "IntentAgentConfig":
+        if self.tools_enabled and not self.tools:
+            raise ValueError("An agent with tools_enabled must configure at least one tool")
+        unknown_tools = sorted(set(self.tools) - AVAILABLE_AGENT_TOOLS)
+        if unknown_tools:
+            raise ValueError(f"Unknown configured tools: {', '.join(unknown_tools)}")
+        return self
 
 
 class CrewAIConfig(StrictModel):
-    agents: dict[IntentLabel, IntentAgentConfig]
+    verbose: bool = False
+    agents: dict[IntentLabel, IntentAgentConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_agent_set(self) -> "CrewAIConfig":
         expected = set(IntentLabel)
         configured = set(self.agents)
+        if not configured:
+            return self
         if configured != expected:
             missing = sorted(intent.value for intent in expected - configured)
             extra = sorted(intent.value for intent in configured - expected)
@@ -202,6 +232,7 @@ class AppSettings(StrictModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     guardrail_llm: LLMConfig = Field(default_factory=LLMConfig)
     crewai: CrewAIConfig
+    agent_config_file: str = "configs/agent.yaml"
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     camera_catalog_file: str = "configs/cameras.yaml"
     camera_catalog: CameraCatalog | None = None
@@ -277,12 +308,27 @@ def load_settings(config_path: str | Path | None = None) -> AppSettings:
     raw_config = yaml.safe_load(app_path.read_text(encoding="utf-8")) or {}
     settings = AppSettings.model_validate(_apply_environment_overrides(raw_config))
 
+    agents_path = _resolve_path(settings.agent_config_file)
+    if not agents_path.is_file():
+        raise FileNotFoundError(f"Agent configuration file not found: {agents_path}")
+    agents_data = yaml.safe_load(agents_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(agents_data, dict):
+        raise ValueError("Agent configuration file must contain a YAML object")
+    configured_crewai = {
+        **settings.crewai.model_dump(),
+        "agents": agents_data.get("agents", {}),
+    }
+
     cameras_path = _resolve_path(settings.camera_catalog_file)
     if not cameras_path.is_file():
         raise FileNotFoundError(f"Camera catalog file not found: {cameras_path}")
     camera_data = yaml.safe_load(cameras_path.read_text(encoding="utf-8")) or {}
     settings = AppSettings.model_validate(
-        {**settings.model_dump(), "camera_catalog": CameraCatalog.model_validate(camera_data)}
+        {
+            **settings.model_dump(),
+            "crewai": configured_crewai,
+            "camera_catalog": CameraCatalog.model_validate(camera_data),
+        }
     )
 
     if settings.auth.mode == "bearer":

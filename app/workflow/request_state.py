@@ -19,4 +19,5 @@ class RequestState(BaseModel):
     intent: IntentLabel | None = None
     classification_reason: str | None = None
     classification_source: str | None = None
+    agent_response: str | None = None
     workflow_status: str = "received"

@@ -16,6 +16,7 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     request_id: str
     intent: IntentLabel
+    answer: str = Field(min_length=1, max_length=2000)
     reason: str = Field(min_length=1, max_length=300)
     status: Literal[
         "classified",

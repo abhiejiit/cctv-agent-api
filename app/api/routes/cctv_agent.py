@@ -43,6 +43,7 @@ async def ask_cctv_agent(
     return AskResponse(
         request_id=result.request_id,
         intent=result.intent,
+        answer=result.agent_response or "I could not prepare a response. Please try again.",
         reason=result.classification_reason or "Please clarify what camera location you mean.",
         status=result.workflow_status,
         guardrail_status=result.guardrail_status,

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
-import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -17,6 +17,7 @@ from app.api.router import router
 from app.config import AppSettings, load_settings
 from app.errors import register_exception_handlers
 from app.planning.classifier import LLMIntentClassifier
+from app.orchestration.intent_router import IntentAgentRouter
 from app.security.input_guardrails import InputGuardrails
 from app.security.llm_input_filter import LLMInputFilter
 from app.security.rate_limits import InMemoryRateLimiter
@@ -30,17 +31,17 @@ REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
     configured_settings = settings or load_settings()
+    configure_logging(
+        configured_settings.application.log_level,
+        capture_logs_in_spans=configured_settings.tracing.capture_logs_in_spans,
+    )
     logging.getLogger(__name__).info(
-        "Effective LLM configuration classifier=%s thinking_model=%s think=%s guardrail=%s",
+        "Effective LLM configuration classifier=%s/%s thinking_model=%s think=%s guardrail=%s",
         configured_settings.llm.provider,
         configured_settings.llm.model,
         configured_settings.llm.thinking_model,
         configured_settings.llm.think,
         configured_settings.guardrail_llm.model,
-    )
-    configure_logging(
-        configured_settings.application.log_level,
-        capture_logs_in_spans=configured_settings.tracing.capture_logs_in_spans,
     )
 
     @asynccontextmanager
@@ -65,10 +66,15 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     filter_config=configured_settings.guardrails.llm_filter,
                     tracing_config=configured_settings.tracing,
                 )
+                agent_router = IntentAgentRouter(
+                    config=configured_settings.crewai,
+                    llm_config=configured_settings.llm,
+                )
                 application.state.request_workflow = RequestWorkflow(
                     guardrails=InputGuardrails(configured_settings.guardrails),
                     llm_input_filter=llm_input_filter,
                     classifier=classifier,
+                    agent_router=agent_router,
                 )
                 application.state.rate_limiter = InMemoryRateLimiter(
                     configured_settings.api.max_requests_per_minute

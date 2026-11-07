@@ -1,14 +1,12 @@
 # CCTV Finder Agent
 
-Initial API implementation for the first three architecture steps: application
-configuration, authenticated request intake with request state and input
-guardrails, and LLM-based intent classification through a configurable local
-LLM provider.
+Initial API implementation through the first post-classification orchestration
+step: application configuration, authenticated request intake, input
+guardrails, LLM-based intent classification, and CrewAI intent-agent routing.
 
-This slice ends after classification. It does not yet run a CrewAI flow, query a
-camera service, inspect live video, persist conversations, or use Redis/MongoDB.
-The endpoint returns an intent so the next implementation step can route that
-state into the corresponding CrewAI agent.
+The selected agent returns a configurable acknowledgement for its intent. This
+slice does not query camera services, inspect live video, persist conversations,
+or use Redis/MongoDB history yet.
 
 ## Requirements
 
@@ -16,6 +14,7 @@ state into the corresponding CrewAI agent.
 - A locally hosted LLM provider that supports structured output; Ollama is the
   configured adapter by default
 - A model available to the configured provider
+- CrewAI with LiteLLM support for local Ollama agent calls
 
 ## Setup
 
@@ -23,7 +22,8 @@ state into the corresponding CrewAI agent.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-ollama pull llama3.2:3b 
+ollama pull qwen3:8b #SAmple models used in local development - thinking model
+ollama pull llama3 #light weight llm (performance tradeoff)
 ```
 
 The provider, model name, base URL, chat/readiness paths, sampling options,
@@ -32,7 +32,27 @@ request limits, authentication mode, and guardrail patterns are in
 model with `CCTV_LLM_BASE_URL` and `CCTV_LLM_MODEL`. Camera intent descriptions and aliases are in
 `configs/cameras.yaml`.
 
-The classifier has a 128-token output budget by default so the model can finish
+The classifier uses `llm` (Qwen3 by default), while the topical input guardrail
+uses the separate `guardrail_llm` configuration (Llama3 by default). After a
+successful classification, `configs/agent.yaml` provides a per-intent role, goal,
+backstory, instructions, examples, expected reply, and tool assignment. Set
+`tools_enabled: true` and list tool names under `tools` to expose that agent's
+functions. Agents receive only their configured functions: parking, for example,
+has both entity details and occupancy tools, while the entrance and lawn agents
+have their own region-specific details functions. Greetings, clarification, and
+out-of-scope agents have no tools. Tool names are resolved from a fixed Python
+registry in `app/orchestration/camera_tools.py`; YAML cannot import or execute
+arbitrary code. Each function declares its input types, so CrewAI fills tool
+arguments such as `entity` from the user's question when it calls the function.
+
+These functions currently return representative mock JSON and do not connect to
+live camera footage. Tool calls and arguments are logged in the CrewAI span. The
+prototype agent still returns the configured acknowledgement after a tool call;
+edit `expected_reply` in `configs/agent.yaml` to change it. Set `crewai.verbose`
+in `configs/app.yaml` to enable CrewAI's console diagnostics. The file path is
+selected by `agent_config_file` in `configs/app.yaml`.
+
+The classifier has a 512-token output budget by default so the model can finish
 the structured JSON response, including both the intent and short reason.
 
 Start the API:
@@ -66,6 +86,9 @@ text attribute on the top-level HTTP request span. Expand the `POST
 /cctv-agent` span and inspect its tags/attributes to see timestamped log lines
 from the guardrail, workflow, and classifier together. The attribute is capped
 at 16,000 characters; older lines are truncated if a request produces more.
+CrewAI route, kickoff, and completion logs are also attached to the
+`cctv.crewai.intent_agent` span under the same `debug.logs` attribute, alongside
+agent role, intent, elapsed time, and final configured reply attributes.
 LLM prompt and response capture are
 controlled by `tracing.capture_llm_prompts` and `tracing.capture_llm_outputs`
 in `configs/app.yaml`. With both enabled, inspect the
@@ -132,6 +155,7 @@ Example response:
 {
   "request_id": "...",
   "intent": "parking",
+  "answer": "Hey, you've chosen parking.",
   "reason": "The question asks about a vehicle in the parking area.",
   "status": "classified",
   "guardrail_status": "allowed",
@@ -149,9 +173,13 @@ private model reasoning.
 After deterministic size/pattern checks and before intent classification, the
 API calls the configured LLM guardrail filter. Its topics and policy are
 configured under `guardrails.llm_filter` in `configs/app.yaml`. The default
-topics are escalation, dispute, and harassment; each topic has a description
-and examples to guide the filter. Edit those settings to adjust the policy or
-topics. Set `enabled: false` to disable the LLM filter.
+topics are escalation, dispute, harassment, and footage tampering; each topic
+has a description and examples to guide the filter. Direct footage deletion,
+alteration, concealment, and recording-disable requests also match the
+configurable deterministic `footage_tampering` pattern. Edit the policy,
+topics, examples, or pattern in `configs/app.yaml` to adjust these checks. Set
+`enabled: false` to disable the LLM filter; deterministic pattern checks still
+run.
 
 When the filter flags a request, intent classification is skipped and the API
 returns the common message `we're sorry, we cannot proceed with that`, with

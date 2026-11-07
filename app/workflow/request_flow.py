@@ -1,4 +1,4 @@
-"""Request flow through state initialization, guardrails, and intent classification."""
+"""Request flow through guardrails, classification, and selected CrewAI agent."""
 
 import logging
 
@@ -6,6 +6,7 @@ from app.planning.classifier import LLMClassifierError, LLMIntentClassifier
 from app.planning.models import IntentLabel
 from app.security.input_guardrails import InputGuardrails
 from app.security.llm_input_filter import LLMInputFilter, LLMInputGuardrailError
+from app.orchestration.intent_router import IntentAgentRouter
 from app.workflow.request_state import RequestState
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -22,10 +23,12 @@ class RequestWorkflow:
         guardrails: InputGuardrails,
         llm_input_filter: LLMInputFilter,
         classifier: LLMIntentClassifier,
+        agent_router: IntentAgentRouter,
     ) -> None:
         self._guardrails = guardrails
         self._llm_input_filter = llm_input_filter
         self._classifier = classifier
+        self._agent_router = agent_router
 
     async def run(self, state: RequestState) -> RequestState:
         """Inspect input, record findings, then classify into a closed intent set."""
@@ -56,6 +59,7 @@ class RequestWorkflow:
                 )
                 state.classification_source = "guardrail"
                 state.workflow_status = "guardrail_blocked"
+                state.agent_response = GUARDRAIL_END_MESSAGE
                 workflow_span.set_attribute("cctv.intent", state.intent.value)
                 workflow_span.set_attribute("cctv.workflow_status", state.workflow_status)
                 logger.warning("Request blocked by guardrails request_id=%s", state.request_id)
@@ -74,6 +78,7 @@ class RequestWorkflow:
                     state.classification_reason = GUARDRAIL_END_MESSAGE
                     state.classification_source = "guardrail"
                     state.workflow_status = "guardrail_unavailable"
+                    state.agent_response = GUARDRAIL_END_MESSAGE
                     workflow_span.set_status(Status(StatusCode.ERROR, "guardrail unavailable"))
                     workflow_span.set_attribute("cctv.guardrail.status", "unavailable")
                     workflow_span.set_attribute("cctv.intent", state.intent.value)
@@ -91,6 +96,7 @@ class RequestWorkflow:
                     state.classification_reason = GUARDRAIL_END_MESSAGE
                     state.classification_source = "guardrail"
                     state.workflow_status = "guardrail_blocked"
+                    state.agent_response = GUARDRAIL_END_MESSAGE
                     workflow_span.set_attribute("cctv.guardrail.status", "blocked")
                     workflow_span.set_attribute("cctv.guardrail.topics", assessment.topics)
                     workflow_span.set_attribute("cctv.intent", state.intent.value)
@@ -123,6 +129,11 @@ class RequestWorkflow:
                 logger.warning("Request used classifier fallback request_id=%s", state.request_id)
             workflow_span.set_attribute("cctv.intent", state.intent.value)
             workflow_span.set_attribute("cctv.workflow_status", state.workflow_status)
+            state.agent_response = await self._agent_router.invoke(
+                state.intent,
+                state.normalized_message or state.user_message,
+            )
+            workflow_span.set_attribute("cctv.agent_response.length", len(state.agent_response))
             logger.info(
                 "Request workflow completed request_id=%s status=%s intent=%s source=%s",
                 state.request_id,

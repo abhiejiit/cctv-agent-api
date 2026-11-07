@@ -10,6 +10,9 @@ from opentelemetry.trace import Span
 _request_log_context: ContextVar[tuple[Span, list[str]] | None] = ContextVar(
     "request_log_context", default=None
 )
+_active_span_log_context: ContextVar[tuple[Span, list[str]] | None] = ContextVar(
+    "active_span_log_context", default=None
+)
 _LOG_ATTRIBUTE = "debug.logs"
 _MAX_LOG_TEXT_LENGTH = 16_000
 _log_lock = Lock()
@@ -24,6 +27,15 @@ def reset_request_log_span(token: Token) -> None:
     _request_log_context.reset(token)
 
 
+def bind_active_span_log_context(span: Span) -> Token:
+    """Make logs visible on a selected child span as well as the request span."""
+    return _active_span_log_context.set((span, []))
+
+
+def reset_active_span_log_context(token: Token) -> None:
+    _active_span_log_context.reset(token)
+
+
 class SpanTextLogHandler(logging.Handler):
     """Append readable application log lines to the parent HTTP span."""
 
@@ -32,8 +44,18 @@ class SpanTextLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             request_context = _request_log_context.get()
-            span = request_context[0] if request_context else trace.get_current_span()
-            if not span.is_recording():
+            active_context = _active_span_log_context.get()
+            active_span = active_context[0] if active_context else trace.get_current_span()
+            log_targets: list[tuple[Span, list[str]]] = []
+            if active_context and active_span.is_recording():
+                log_targets.append(active_context)
+            if request_context and request_context[0].is_recording():
+                request_span_id = request_context[0].get_span_context().span_id
+                if all(span.get_span_context().span_id != request_span_id for span, _ in log_targets):
+                    log_targets.append(request_context)
+            elif not request_context and not log_targets and active_span.is_recording():
+                log_targets.append((active_span, []))
+            if not log_targets:
                 return
             message = record.getMessage().replace("\r", "\\r").replace("\n", "\\n")
             timestamp = self._timestamp_formatter.formatTime(record)
@@ -42,13 +64,13 @@ class SpanTextLogHandler(logging.Handler):
             # Span attributes are directly visible as tags in Jaeger. Serialize
             # read/append/write so concurrent request tasks do not lose lines.
             with _log_lock:
-                lines = request_context[1] if request_context else []
-                lines.append(log_line)
-                combined = "\n".join(lines)
-                if len(combined) > _MAX_LOG_TEXT_LENGTH:
-                    combined = "[earlier log text truncated]\n" + combined[-(_MAX_LOG_TEXT_LENGTH - 31):]
-                    lines[:] = combined.splitlines()
-                span.set_attribute(_LOG_ATTRIBUTE, combined)
+                for span, lines in log_targets:
+                    lines.append(log_line)
+                    combined = "\n".join(lines)
+                    if len(combined) > _MAX_LOG_TEXT_LENGTH:
+                        combined = "[earlier log text truncated]\n" + combined[-(_MAX_LOG_TEXT_LENGTH - 31):]
+                        lines[:] = combined.splitlines()
+                    span.set_attribute(_LOG_ATTRIBUTE, combined)
         except Exception:
             self.handleError(record)
 
