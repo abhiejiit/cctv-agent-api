@@ -18,12 +18,18 @@ logger = logging.getLogger(__name__)
 async def get_principal(request: Request) -> Principal:
     settings: AppSettings = request.app.state.settings
     if settings.auth.mode == "development":
+        camera_ids = frozenset(
+            definition.camera_id
+            for definition in settings.camera_catalog.intents.values()
+            if definition.camera_id is not None
+        )
         return Principal(
             user_id=request.headers.get("X-User-ID", settings.auth.development_user_id),
             household_id=request.headers.get(
                 "X-Household-ID", settings.auth.development_household_id
             ),
             auth_method="development",
+            allowed_camera_ids=camera_ids,
         )
 
     authorization = request.headers.get("Authorization", "")
@@ -48,6 +54,7 @@ async def get_principal(request: Request) -> Principal:
                 user_id=credential.user_id,
                 household_id=credential.household_id,
                 auth_method="bearer",
+                allowed_camera_ids=frozenset(credential.camera_ids),
             )
 
     logger.warning("Authentication rejected request_id=%s reason=invalid_bearer", request.state.request_id)

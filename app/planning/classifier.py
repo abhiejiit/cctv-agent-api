@@ -99,7 +99,8 @@ class LLMIntentClassifier:
                 done_reason = response_data.get("done_reason", "unknown")
                 output_tokens = response_data.get("eval_count")
                 span.set_attribute("llm.response.intent", result.intent.value)
-                span.set_attribute("llm.response.reason", result.reason)
+                if self._tracing_config.capture_llm_outputs:
+                    span.set_attribute("llm.response.reason", result.reason)
                 span.set_attribute("llm.response.reason_tokens", len(result.reason.split()))
                 span.set_attribute("llm.response.elapsed_ms", elapsed_ms)
                 span.set_attribute("llm.response.done_reason", str(done_reason))
@@ -113,20 +114,18 @@ class LLMIntentClassifier:
                     done_reason,
                     output_tokens if output_tokens is not None else "unknown",
                 )
-                logger.debug("LLM classification reason=%s", result.reason)
+                if self._tracing_config.capture_llm_outputs:
+                    logger.debug("LLM classification reason=%s", result.reason)
                 return result
             except httpx.HTTPStatusError as exc:
                 elapsed_ms = round((time.perf_counter() - started_at) * 1000)
-                provider_body = exc.response.text[:500].replace("\n", " ")
                 span.set_status(Status(StatusCode.ERROR, "llm http error"))
                 span.set_attribute("error.type", type(exc).__name__)
                 span.set_attribute("llm.response.status_code", exc.response.status_code)
-                span.set_attribute("llm.response.error", provider_body)
                 logger.error(
-                    "LLM classification provider rejected model=%s status=%d body=%s",
+                    "LLM classification provider rejected model=%s status=%d",
                     self._config.model,
                     exc.response.status_code,
-                    provider_body,
                 )
                 raise LLMClassifierError("Intent classification is temporarily unavailable") from exc
             except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:

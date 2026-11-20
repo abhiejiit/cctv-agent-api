@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -28,19 +26,19 @@ class CameraToolInput(BaseModel):
 
 
 class FrontEntranceToolInput(CameraToolInput):
-    entity_requested: Literal["door", "window", "person", "vehicle", "package"]
+    pass
 
 
 class ParkingToolInput(CameraToolInput):
-    entity_requested: Literal["person", "vehicle", "car", "motorcycle", "bicycle"]
+    pass
 
 
 class BackEntranceToolInput(CameraToolInput):
-    entity_requested: Literal["door", "window", "person", "vehicle", "package"]
+    pass
 
 
 class CommonLawnToolInput(CameraToolInput):
-    entity_requested: Literal["person", "vehicle", "animal", "dog", "cat", "bird", "package"]
+    pass
 
 
 class ParkingOccupancyToolInput(BaseModel):

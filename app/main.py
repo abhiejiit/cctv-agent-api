@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -12,6 +13,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from app.api.router import router
 from app.config import AppSettings, load_settings
@@ -22,6 +24,7 @@ from app.security.input_guardrails import InputGuardrails
 from app.security.llm_input_filter import LLMInputFilter
 from app.security.rate_limits import InMemoryRateLimiter
 from app.telemetry.logging import bind_request_log_span, configure_logging, reset_request_log_span
+from app.telemetry.metrics import AppMetrics
 from app.telemetry.tracing import configure_tracing, flush_tracing, instrument_http_client
 from app.workflow.request_flow import RequestWorkflow
 
@@ -49,11 +52,16 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         timeout = httpx.Timeout(
             max(configured_settings.llm.timeout_seconds, configured_settings.guardrail_llm.timeout_seconds)
         )
-        provider = application.state.tracer_provider
+        provider = configure_tracing(application, configured_settings.tracing)
+        application.state.tracer_provider = provider
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 instrument_http_client(client, provider)
                 application.state.http_client = client
+                application.state.request_semaphore = asyncio.Semaphore(
+                    configured_settings.api.max_concurrent_requests
+                )
+                agent_semaphore = asyncio.Semaphore(configured_settings.api.max_concurrent_agents)
                 classifier = LLMIntentClassifier(
                     client=client,
                     config=configured_settings.llm,
@@ -70,12 +78,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     config=configured_settings.crewai,
                     llm_config=configured_settings.llm,
                     tracing_config=configured_settings.tracing,
+                    agent_semaphore=agent_semaphore,
+                    agent_timeout_seconds=configured_settings.api.agent_timeout_seconds,
+                    agent_admission_timeout_seconds=configured_settings.api.agent_admission_timeout_seconds,
+                    metrics=application.state.metrics,
                 )
                 application.state.request_workflow = RequestWorkflow(
                     guardrails=InputGuardrails(configured_settings.guardrails),
                     llm_input_filter=llm_input_filter,
                     classifier=classifier,
                     agent_router=agent_router,
+                    camera_catalog=configured_settings.camera_catalog,
+                    metrics=application.state.metrics,
                 )
                 application.state.rate_limiter = InMemoryRateLimiter(
                     configured_settings.api.max_requests_per_minute
@@ -90,7 +104,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = configured_settings
-    application.state.tracer_provider = configure_tracing(application, configured_settings.tracing)
+    application.state.metrics = AppMetrics()
+    application.state.tracer_provider = None
 
     @application.middleware("http")
     async def request_id_middleware(request: Request, call_next):
@@ -100,7 +115,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         log_context_token = bind_request_log_span(trace.get_current_span())
         try:
             response = await call_next(request)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Unhandled request failure request_id=%s error_type=%s",
+                request_id,
+                type(exc).__name__,
+            )
+            trace.get_current_span().set_status(Status(StatusCode.ERROR, "unhandled request failure"))
+            trace.get_current_span().set_attribute("error.type", type(exc).__name__)
+            metrics = getattr(request.app.state, "metrics", None)
+            if metrics is not None:
+                metrics.observe_request("error")
+                metrics.observe_stage("request", "error", 0.0)
             response = JSONResponse(
                 status_code=500,
                 content={

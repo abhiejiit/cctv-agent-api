@@ -1,12 +1,9 @@
 # CCTV Finder Agent
 
-Initial API implementation through the first post-classification orchestration
-step: application configuration, authenticated request intake, input
-guardrails, LLM-based intent classification, and CrewAI intent-agent routing.
-
-The selected agent returns a configurable acknowledgement for its intent. This
-slice does not query camera services, inspect live video, persist conversations,
-or use Redis/MongoDB history yet.
+Mock-backed CCTV question-answering API. Requests pass through authentication,
+input guardrails, LLM intent classification, and a CrewAI agent that can call a
+camera-scoped tool. The tools currently return synthetic fixtures. There is no
+live video ingestion, MongoDB persistence, or Redis conversation history yet.
 
 ## Requirements
 
@@ -22,9 +19,12 @@ or use Redis/MongoDB history yet.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-ollama pull qwen3:8b #SAmple models used in local development - thinking model
-ollama pull llama3 #light weight llm (performance tradeoff)
+ollama pull llama3
 ```
+
+The API dependency set does not install the optional vision experiment
+packages. Install `requirements-vision.txt` only when working on the local YOLO
+experiment.
 
 The provider, model name, base URL, chat/readiness paths, sampling options,
 request limits, authentication mode, and guardrail patterns are in
@@ -32,7 +32,7 @@ request limits, authentication mode, and guardrail patterns are in
 model with `CCTV_LLM_BASE_URL` and `CCTV_LLM_MODEL`. Camera intent descriptions and aliases are in
 `configs/cameras.yaml`.
 
-The classifier uses `llm` (Qwen3 by default), while the topical input guardrail
+The classifier uses `llm`, while the topical input guardrail
 uses the separate `guardrail_llm` configuration (Llama3 by default). After a
 successful classification, `configs/agent.yaml` provides a per-intent role, goal,
 backstory, instructions, examples, expected reply, and tool assignment. Set
@@ -58,13 +58,14 @@ from it. Each agent also has a configurable `capabilities` list. When a camera
 agent cannot resolve a request from its tool result, it politely explains the
 limit and offers only its listed capabilities. The greetings agent responds
 only with the capability menu so the user can choose a supported question.
-Tool names, validated inputs, and result summaries are logged in the CrewAI
-span. Greetings, clarification, and out-of-scope agents have no tools. Set
-`crewai.verbose` in
-`configs/app.yaml` to enable CrewAI's console diagnostics. The file path is
-selected by `agent_config_file` in `configs/app.yaml`.
+Tool names and durations are logged in CrewAI spans. Prompt, response, and tool
+payload content capture is disabled by default; enable it only in a controlled
+development environment. Greetings, clarification, and out-of-scope agents
+have no tools. `crewai.verbose` defaults to false to avoid verbose provider and
+tool output. The agent file is selected by `agent_config_file` in
+`configs/app.yaml`.
 
-The classifier has a 512-token output budget by default so the model can finish
+The classifier has a bounded 256-token output budget by default so the model can finish
 the structured JSON response, including both the intent and short reason.
 
 Start the API:
@@ -100,23 +101,25 @@ from the guardrail, workflow, and classifier together. The attribute is capped
 at 16,000 characters; older lines are truncated if a request produces more.
 CrewAI route, kickoff, and completion logs are also attached to the
 `cctv.crewai.intent_agent` span under the same `debug.logs` attribute. Expand
-that span to inspect agent role, goal, backstory, instructions, examples,
-capabilities, configured tools and their Pydantic schemas, model settings,
-execution time, step count, token usage when returned by CrewAI, and final answer.
-When prompt capture is enabled, the `cctv.crewai.task.execute` child span also
-shows the complete task description and user input.
+that span to inspect agent role, configured tools, model settings, execution
+time, step count, and token usage when returned by CrewAI.
+When prompt capture is enabled, the `cctv.crewai.task.execute` child span shows
+the task description and user input. User input is serialized as JSON in the
+task prompt so delimiter-like text remains data.
 
 Each tool call creates a child span named
 `cctv.crewai.tool.<tool_name>`. The child span contains the validated input under
-`crewai.tool.input.json`, the full service response under
-`crewai.tool.output.json`, camera ID, data source, duration, response size, and
-success/error details. The latest tool input and response are also copied onto
+`crewai.tool.input.json` and the service response under
+`crewai.tool.output.json` only when their respective capture flags are enabled;
+camera ID, data source, duration, response size, and success/error details are
+always recorded. The latest tool input and response are also copied onto
 the parent intent-agent span as `crewai.tool.last.input.json` and
-`crewai.tool.last.output.json`. Agent step spans/logs record selected tool,
-arguments, tool result, and final output; private reasoning text is not
-captured. Tool payload capture is controlled by
+`crewai.tool.last.output.json` only when payload capture is enabled. Agent step
+spans/logs record the selected tool and payload lengths by default; arguments,
+results, and final output require their respective capture options. Private
+reasoning text is not captured. Tool payload capture is controlled by
 `tracing.capture_tool_inputs` and `tracing.capture_tool_outputs` in
-`configs/app.yaml` (both enabled in the current configuration). Large tool
+`configs/app.yaml` (both disabled by default). Large tool
 payloads are capped at 12,000 characters per span attribute, with truncation
 recorded explicitly.
 
@@ -129,22 +132,24 @@ The classifier span also has `llm.response.intent` and
 `llm.response.reason`; `reason` is the short structured rationale returned by
 the classifier, not private model reasoning. These fields can contain user
 messages and model output, so disable prompt/output capture when trace access
-should not include that data.
+should not include that data. CrewAI step inputs/results and final output obey
+the same capture settings.
 
 The capture settings can also be overridden with `CCTV_TRACE_CAPTURE_LOGS`,
 `CCTV_TRACE_CAPTURE_LLM_PROMPTS`, `CCTV_TRACE_CAPTURE_LLM_OUTPUTS`,
 `CCTV_TRACE_CAPTURE_TOOL_INPUTS`, and `CCTV_TRACE_CAPTURE_TOOL_OUTPUTS` using
 `true` or `false`.
 
-The classifier and guardrail can use separate Ollama configurations. The
-classifier can use Qwen3 reasoning while the guardrail stays deterministic:
+The classifier and guardrail can use separate Ollama configurations. Use a
+small non-thinking model for lower latency; choose a thinking model when the
+classification quality improvement justifies the added latency:
 
 ```yaml
 # Main intent classifier
 llm:
   model: qwen3:8b
-thinking_model: true
-think: true
+  thinking_model: true
+  think: true
 
 # Input guardrail
 guardrail_llm:
@@ -168,6 +173,12 @@ service name instead of `localhost`). Set `CCTV_TRACING_ENABLED=false` to turn
 tracing off. Sampling ratio and service name are configurable in
 `configs/app.yaml` under `tracing`.
 
+The API exposes Prometheus text metrics at `/metrics`. Metrics are process
+local and use only fixed stage, status, and age labels; they do not include user
+messages, user IDs, or camera IDs. In production, configure
+`metrics.auth_token_environment_variable` and provide that bearer token through
+the environment; production startup fails if it is missing.
+
 ## Request
 
 Development mode is enabled by default and uses a local development identity.
@@ -187,12 +198,17 @@ Example response:
 {
   "request_id": "...",
   "intent": "parking",
-  "answer": "Hey, you've chosen parking.",
+  "answer": "Demo data only (mock snapshot, not live footage): I detected one car.",
   "reason": "The question asks about a vehicle in the parking area.",
   "status": "classified",
   "guardrail_status": "allowed",
   "guardrail_findings": [],
-  "classification_source": "llm"
+  "classification_source": "llm",
+  "observation": {
+    "source": "mock_yolo_camera_service",
+    "data_status": "mock",
+    "captured_at": "2026-11-08T08:00:00Z"
+  }
 }
 ```
 
@@ -231,7 +247,12 @@ unavailable or returns an invalid response, the request fails closed to
 `intent_clarify` with `classification_fallback` status.
 
 Readiness and liveness are available at `/health/ready` and `/health/live`.
-The ready endpoint checks reachability of the configured LLM provider.
+Readiness checks the configured classifier model and, when enabled, guardrail
+model. `/metrics` exposes process-local Prometheus metrics with bounded labels
+for stage duration, operation outcomes, request outcomes, and rate limiting.
+These metrics and the in-process rate limiter are single-process MVP features;
+keep the metrics endpoint private to the service network and use shared
+infrastructure before running multiple API replicas.
 
 ## Bearer authentication mode
 
@@ -243,7 +264,10 @@ example:
 export CCTV_DEMO_BEARER_TOKEN='replace-with-a-long-random-token'
 ```
 
-The bearer token is mapped to the configured user and household in the YAML.
+The bearer token is mapped to the configured user, household, and allowed
+camera IDs in the YAML. Camera tools resolve camera IDs and entity/property
+allowlists from `configs/cameras.yaml` and check those IDs against the
+authenticated principal before fetching data.
 This is a bootstrap mechanism; production deployments should connect the
 service to the selected identity provider and secret manager. Development
 header authentication is rejected when `CCTV_ENVIRONMENT=production`.
@@ -259,8 +283,11 @@ header authentication is rejected when `CCTV_ENVIRONMENT=production`.
   storage when operating multiple replicas.
 - Keep the LLM provider on a trusted network and apply appropriate network
   controls. Configure `llm.base_url` and endpoint paths for the API adapter.
-- The current classifier produces a route label only. It does not claim that a
-  person, vehicle, door, or other object is present in camera footage.
+- The current camera provider is synthetic demo data. API responses identify
+  mock observations and do not represent live camera state.
+- The API enforces the configured request deadline and bounded request/agent
+  concurrency. The defaults are intended for a small pilot, not a multi-replica
+  deployment.
 
 The configured adapter receives the `IntentClassification` JSON schema so the
 provider can constrain its output to the supported intent set. Ollama is the

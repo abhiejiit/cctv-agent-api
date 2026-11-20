@@ -9,3 +9,4 @@ class Principal(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     household_id: str = Field(min_length=1, max_length=128)
     auth_method: str = Field(min_length=1, max_length=32)
+    allowed_camera_ids: frozenset[str] = frozenset()

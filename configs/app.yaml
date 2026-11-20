@@ -11,6 +11,11 @@ server:
 api:
   max_message_characters: 2000
   max_requests_per_minute: 30
+  max_concurrent_requests: 4
+  admission_timeout_seconds: 1
+  max_concurrent_agents: 2
+  agent_admission_timeout_seconds: 1
+  agent_timeout_seconds: 35
 
 auth:
   # `development` accepts local development identity headers only.
@@ -24,6 +29,11 @@ auth:
     - token_environment_variable: CCTV_DEMO_BEARER_TOKEN
       user_id: demo-user
       household_id: demo-household
+      camera_ids:
+        - demo-front-entrance
+        - demo-parking
+        - demo-back-entrance
+        - demo-common-lawn
 
 guardrails:
   max_message_characters: 2000
@@ -96,7 +106,7 @@ llm:
   readiness_path: /api/tags
   timeout_seconds: 35
   temperature: 0.0
-  max_output_tokens: 512
+  max_output_tokens: 256
   keep_alive: 5m
 
 guardrail_llm:
@@ -109,11 +119,11 @@ guardrail_llm:
   readiness_path: /api/tags
   timeout_seconds: 35
   temperature: 0.0
-  max_output_tokens: 128
+  max_output_tokens: 64
   keep_alive: 5m
 
 crewai:
-  verbose: true
+  verbose: false
 agent_config_file: configs/agent.yaml
 
 tracing:
@@ -124,9 +134,12 @@ tracing:
   sample_ratio: 1.0
   export_timeout_seconds: 5
   capture_logs_in_spans: true
-  capture_llm_prompts: true
-  capture_llm_outputs: true
-  capture_tool_inputs: true
-  capture_tool_outputs: true
+  capture_llm_prompts: false
+  capture_llm_outputs: false
+  capture_tool_inputs: false
+  capture_tool_outputs: false
+
+metrics:
+  enabled: true
 
 camera_catalog_file: configs/cameras.yaml

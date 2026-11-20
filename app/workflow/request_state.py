@@ -20,4 +20,5 @@ class RequestState(BaseModel):
     classification_reason: str | None = None
     classification_source: str | None = None
     agent_response: str | None = None
+    observation_metadata: dict[str, str] | None = None
     workflow_status: str = "received"

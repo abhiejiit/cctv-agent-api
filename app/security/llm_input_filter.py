@@ -149,16 +149,13 @@ class LLMInputFilter:
                 )
                 return assessment
             except httpx.HTTPStatusError as exc:
-                provider_body = exc.response.text[:500].replace("\n", " ")
                 span.set_status(Status(StatusCode.ERROR, "guardrail llm http error"))
                 span.set_attribute("error.type", type(exc).__name__)
                 span.set_attribute("llm.response.status_code", exc.response.status_code)
-                span.set_attribute("llm.response.error", provider_body)
                 logger.error(
-                    "LLM input guardrail provider rejected model=%s status=%d body=%s",
+                    "LLM input guardrail provider rejected model=%s status=%d",
                     self._llm_config.model,
                     exc.response.status_code,
-                    provider_body,
                 )
                 raise LLMInputGuardrailError(
                     "Input policy evaluation is temporarily unavailable"

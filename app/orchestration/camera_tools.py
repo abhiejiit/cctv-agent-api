@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from contextvars import ContextVar, Token
+from datetime import datetime, timezone
 from typing import Callable
 
 from opentelemetry import trace
@@ -18,15 +20,62 @@ from app.orchestration.tool_schemas import (
     ParkingOccupancyToolInput,
     ParkingToolInput,
 )
+from app.config import CameraCatalog
+from app.telemetry.metrics import AppMetrics
 from app.services.camera_service_provider import get_camera_data_service
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 _tool_trace_options: ContextVar[tuple[bool, bool]] = ContextVar(
-    "camera_tool_trace_options", default=(True, True)
+    "camera_tool_trace_options", default=(False, False)
 )
 _intent_agent_span: ContextVar[Span | None] = ContextVar("camera_tool_agent_span", default=None)
+_tool_context: ContextVar["ToolInvocationContext | None"] = ContextVar(
+    "camera_tool_invocation_context", default=None
+)
 _MAX_TOOL_TRACE_CHARS = 12_000
+
+
+@dataclass
+class ToolInvocationContext:
+    camera_catalog: CameraCatalog
+    allowed_camera_ids: frozenset[str]
+    metrics: AppMetrics | None = None
+    observation_metadata: dict[str, str] | None = None
+
+
+def bind_tool_invocation_context(
+    camera_catalog: CameraCatalog,
+    allowed_camera_ids: frozenset[str],
+    metrics: AppMetrics | None = None,
+) -> tuple[Token, ToolInvocationContext]:
+    context = ToolInvocationContext(camera_catalog, allowed_camera_ids, metrics)
+    return _tool_context.set(context), context
+
+
+def reset_tool_invocation_context(token: Token) -> None:
+    _tool_context.reset(token)
+
+
+def _resolve_camera_id(intent_name: str, entity: str, property_name: str | None) -> str:
+    context = _tool_context.get()
+    if context is None:
+        raise PermissionError("Camera tool has no authorized request context")
+    intent = next(
+        (key for key in context.camera_catalog.intents if key.value == intent_name),
+        None,
+    )
+    if intent is None:
+        raise PermissionError("Camera intent is not configured")
+    definition = context.camera_catalog.intents[intent]
+    if definition.camera_id is None or definition.camera_id not in context.allowed_camera_ids:
+        raise PermissionError("Camera access is not authorized")
+    if entity not in definition.entities:
+        raise ValueError(f"Entity is not supported by {intent_name}")
+    allowed_properties = definition.properties.get(entity, [])
+    if property_name is not None and property_name not in allowed_properties:
+        raise ValueError(f"Property is not supported for {entity}")
+    return definition.camera_id
 
 
 def bind_tool_trace_options(capture_inputs: bool, capture_outputs: bool) -> Token:
@@ -77,6 +126,23 @@ def _trace_service_call(
             span.set_attribute("crewai.tool.execution.elapsed_ms", elapsed_ms)
             span.set_attribute("crewai.tool.camera_id", result.camera_id)  # type: ignore[attr-defined]
             span.set_attribute("crewai.tool.data_source", result.source)  # type: ignore[attr-defined]
+            context = _tool_context.get()
+            if context is not None:
+                context.observation_metadata = {
+                    "source": str(result.source),  # type: ignore[attr-defined]
+                    "camera_id": str(result.camera_id),  # type: ignore[attr-defined]
+                    "captured_at": result.captured_at.isoformat(),  # type: ignore[attr-defined]
+                    "data_status": str(result.data_status),  # type: ignore[attr-defined]
+                }
+                if context.metrics is not None:
+                    observation_age = max(
+                        0.0,
+                        (datetime.now(timezone.utc) - result.captured_at).total_seconds(),  # type: ignore[attr-defined]
+                    )
+                    context.metrics.observe_camera_observation(
+                        str(result.data_status),  # type: ignore[attr-defined]
+                        observation_age,
+                    )
             if capture_outputs:
                 span.set_attribute(
                     "crewai.tool.output.json",
@@ -109,20 +175,32 @@ def _trace_service_call(
                 len(output_json),
                 output_json if capture_outputs else "<capture disabled>",
             )
+            if context is not None and context.metrics is not None:
+                context.metrics.observe_stage(
+                    "camera_tool", "ok", (time.perf_counter() - started_at)
+                )
             return output_json
         except Exception as exc:
             elapsed_ms = round((time.perf_counter() - started_at) * 1000)
             span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
             span.set_attribute("crewai.tool.status", "error")
             span.set_attribute("crewai.tool.error.type", type(exc).__name__)
-            span.set_attribute("crewai.tool.error.message", str(exc)[:1000])
             span.set_attribute("crewai.tool.execution.elapsed_ms", elapsed_ms)
             if parent_span.is_recording():
                 parent_span.set_attribute("crewai.tool.last.name", tool_name)
                 parent_span.set_attribute("crewai.tool.last.status", "error")
                 parent_span.set_attribute("crewai.tool.last.error.type", type(exc).__name__)
-                parent_span.set_attribute("crewai.tool.last.error.message", str(exc)[:1000])
-            logger.exception("CrewAI tool failed tool=%s elapsed_ms=%d", tool_name, elapsed_ms)
+            logger.error(
+                "CrewAI tool failed tool=%s elapsed_ms=%d error_type=%s",
+                tool_name,
+                elapsed_ms,
+                type(exc).__name__,
+            )
+            context = _tool_context.get()
+            if context is not None and context.metrics is not None:
+                context.metrics.observe_stage(
+                    "camera_tool", "error", (time.perf_counter() - started_at)
+                )
             raise
 
 
@@ -137,11 +215,12 @@ def fetch_front_entrance_details(
         property_requested=property_requested,
         user_question=user_question,
     )
+    camera_id = _resolve_camera_id("front_entrance", params.entity_requested, params.property_requested)
     return _trace_service_call(
         "fetch_front_entrance_details",
         params,
         lambda: get_camera_data_service().fetch_entity(
-            camera_id="demo-front-entrance",
+            camera_id=camera_id,
             entity_requested=params.entity_requested,
             property_requested=params.property_requested,
             user_question=params.user_question,
@@ -160,11 +239,12 @@ def fetch_parking_details(
         property_requested=property_requested,
         user_question=user_question,
     )
+    camera_id = _resolve_camera_id("parking", params.entity_requested, params.property_requested)
     return _trace_service_call(
         "fetch_parking_details",
         params,
         lambda: get_camera_data_service().fetch_entity(
-            camera_id="demo-parking",
+            camera_id=camera_id,
             entity_requested=params.entity_requested,
             property_requested=params.property_requested,
             user_question=params.user_question,
@@ -178,10 +258,12 @@ def get_parking_occupancy(metric_requested: str, user_question: str) -> str:
         metric_requested=metric_requested,
         user_question=user_question,
     )
+    camera_id = _resolve_camera_id("parking", "vehicle", None)
     return _trace_service_call(
         "get_parking_occupancy",
         params,
         lambda: get_camera_data_service().fetch_parking_summary(
+            camera_id=camera_id,
             metric_requested=params.metric_requested,
             user_question=params.user_question,
         ),
@@ -199,11 +281,12 @@ def fetch_back_entrance_details(
         property_requested=property_requested,
         user_question=user_question,
     )
+    camera_id = _resolve_camera_id("back_entrance", params.entity_requested, params.property_requested)
     return _trace_service_call(
         "fetch_back_entrance_details",
         params,
         lambda: get_camera_data_service().fetch_entity(
-            camera_id="demo-back-entrance",
+            camera_id=camera_id,
             entity_requested=params.entity_requested,
             property_requested=params.property_requested,
             user_question=params.user_question,
@@ -222,11 +305,12 @@ def fetch_common_lawn_details(
         property_requested=property_requested,
         user_question=user_question,
     )
+    camera_id = _resolve_camera_id("common_lawn", params.entity_requested, params.property_requested)
     return _trace_service_call(
         "fetch_common_lawn_details",
         params,
         lambda: get_camera_data_service().fetch_entity(
-            camera_id="demo-common-lawn",
+            camera_id=camera_id,
             entity_requested=params.entity_requested,
             property_requested=params.property_requested,
             user_question=params.user_question,

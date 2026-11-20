@@ -27,6 +27,11 @@ class MockCameraDataService(CameraDataService):
         ],
     }
 
+    def __init__(self) -> None:
+        # The timestamp describes when this synthetic fixture was loaded. It is
+        # intentionally not refreshed per request as if new footage arrived.
+        self._captured_at = datetime.now(timezone.utc)
+
     def fetch_entity(
         self,
         *,
@@ -52,7 +57,8 @@ class MockCameraDataService(CameraDataService):
         return CameraSnapshot(
             source="mock_yolo_camera_service",
             camera_id=camera_id,
-            captured_at=datetime.now(timezone.utc),
+            captured_at=self._captured_at,
+            data_status="mock",
             requested_entity=entity_requested,
             requested_property=property_requested,
             detected=bool(matches),
@@ -63,6 +69,7 @@ class MockCameraDataService(CameraDataService):
     def fetch_parking_summary(
         self,
         *,
+        camera_id: str,
         metric_requested: str,
         user_question: str,
     ) -> ParkingSummary:
@@ -70,13 +77,14 @@ class MockCameraDataService(CameraDataService):
         del user_question
         vehicles = sum(
             item.class_name in {"car", "truck", "bus", "motorcycle"}
-            for item in self._detections["demo-parking"]
+            for item in self._detections[camera_id]
         )
         total_spaces = 8
         return ParkingSummary(
             source="mock_yolo_camera_service",
-            camera_id="demo-parking",
-            captured_at=datetime.now(timezone.utc),
+            camera_id=camera_id,
+            captured_at=self._captured_at,
+            data_status="mock",
             total_spaces=total_spaces,
             occupied_spaces=vehicles,
             available_spaces=max(total_spaces - vehicles, 0),

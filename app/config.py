@@ -44,12 +44,18 @@ class ServerConfig(StrictModel):
 class ApiConfig(StrictModel):
     max_message_characters: int = Field(default=2000, ge=1, le=8192)
     max_requests_per_minute: int = Field(default=30, ge=1, le=10000)
+    max_concurrent_requests: int = Field(default=4, ge=1, le=256)
+    admission_timeout_seconds: float = Field(default=1.0, gt=0, le=30)
+    max_concurrent_agents: int = Field(default=2, ge=1, le=128)
+    agent_admission_timeout_seconds: float = Field(default=1.0, gt=0, le=30)
+    agent_timeout_seconds: float = Field(default=35.0, gt=0, le=300)
 
 
 class BearerCredentialConfig(StrictModel):
     token_environment_variable: str = Field(min_length=1)
     user_id: str = Field(min_length=1, max_length=128)
     household_id: str = Field(min_length=1, max_length=128)
+    camera_ids: list[str] = Field(min_length=1, max_length=128)
 
 
 class AuthConfig(StrictModel):
@@ -175,8 +181,13 @@ class TracingConfig(StrictModel):
     capture_logs_in_spans: bool = True
     capture_llm_prompts: bool = False
     capture_llm_outputs: bool = False
-    capture_tool_inputs: bool = True
-    capture_tool_outputs: bool = True
+    capture_tool_inputs: bool = False
+    capture_tool_outputs: bool = False
+
+
+class MetricsConfig(StrictModel):
+    enabled: bool = True
+    auth_token_environment_variable: str | None = None
 
 
 class CameraIntentConfig(StrictModel):
@@ -202,8 +213,13 @@ class CameraIntentConfig(StrictModel):
             return self
 
         entity_names = set(self.entities)
+        if len(entity_names) != len(self.entities):
+            raise ValueError("Camera entity names must be unique")
         if set(self.properties) - entity_names:
             raise ValueError("Property definitions must refer to configured entities")
+        for entity, properties in self.properties.items():
+            if len(set(properties)) != len(properties):
+                raise ValueError(f"Properties for {entity} must be unique")
         return self
 
 
@@ -237,6 +253,7 @@ class AppSettings(StrictModel):
     crewai: CrewAIConfig
     agent_config_file: str = "configs/agent.yaml"
     tracing: TracingConfig = Field(default_factory=TracingConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     camera_catalog_file: str = "configs/cameras.yaml"
     camera_catalog: CameraCatalog | None = None
 
@@ -344,5 +361,27 @@ def load_settings(config_path: str | Path | None = None) -> AppSettings:
         ]
         if missing:
             raise ValueError(f"Missing bearer token environment variables: {', '.join(missing)}")
+        configured_camera_ids = {
+            definition.camera_id
+            for definition in settings.camera_catalog.intents.values()
+            if definition.camera_id is not None
+        }
+        invalid_camera_ids = sorted(
+            {
+                camera_id
+                for credential in settings.auth.credentials
+                for camera_id in credential.camera_ids
+                if camera_id not in configured_camera_ids
+            }
+        )
+        if invalid_camera_ids:
+            raise ValueError(f"Unknown camera ids in auth configuration: {', '.join(invalid_camera_ids)}")
+
+    if settings.application.environment == "production" and settings.metrics.enabled:
+        metrics_token_name = settings.metrics.auth_token_environment_variable
+        if not metrics_token_name or not os.getenv(metrics_token_name):
+            raise ValueError(
+                "Production metrics require a configured authentication token environment variable"
+            )
 
     return settings

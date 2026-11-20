@@ -1,12 +1,15 @@
 """Request flow through guardrails, classification, and selected CrewAI agent."""
 
 import logging
+import time
 
+from app.config import CameraCatalog
+from app.orchestration.intent_router import CrewAIExecutionError, IntentAgentRouter
 from app.planning.classifier import LLMClassifierError, LLMIntentClassifier
 from app.planning.models import IntentLabel
 from app.security.input_guardrails import InputGuardrails
 from app.security.llm_input_filter import LLMInputFilter, LLMInputGuardrailError
-from app.orchestration.intent_router import IntentAgentRouter
+from app.telemetry.metrics import AppMetrics
 from app.workflow.request_state import RequestState
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -24,11 +27,15 @@ class RequestWorkflow:
         llm_input_filter: LLMInputFilter,
         classifier: LLMIntentClassifier,
         agent_router: IntentAgentRouter,
+        camera_catalog: CameraCatalog,
+        metrics: AppMetrics,
     ) -> None:
         self._guardrails = guardrails
         self._llm_input_filter = llm_input_filter
         self._classifier = classifier
         self._agent_router = agent_router
+        self._camera_catalog = camera_catalog
+        self._metrics = metrics
 
     async def run(self, state: RequestState) -> RequestState:
         """Inspect input, record findings, then classify into a closed intent set."""
@@ -36,7 +43,13 @@ class RequestWorkflow:
             workflow_span.set_attribute("cctv.request_id", state.request_id)
             logger.info("Request workflow started request_id=%s", state.request_id)
             with tracer.start_as_current_span("cctv.input_guardrails") as guardrail_span:
+                stage_started = time.perf_counter()
                 guardrail_result = self._guardrails.inspect(state.user_message)
+                self._metrics.observe_stage(
+                    "guardrails",
+                    "blocked" if guardrail_result.status == "blocked" else "ok",
+                    time.perf_counter() - stage_started,
+                )
                 state.normalized_message = guardrail_result.normalized_message
                 state.guardrail_status = guardrail_result.status
                 state.guardrail_findings = list(guardrail_result.findings)
@@ -66,11 +79,15 @@ class RequestWorkflow:
                 return state
 
             if self._llm_input_filter.enabled:
+                stage_started = time.perf_counter()
                 try:
                     assessment = await self._llm_input_filter.assess(
                         guardrail_result.normalized_message
                     )
                 except LLMInputGuardrailError:
+                    self._metrics.observe_stage(
+                        "guardrail_llm", "error", time.perf_counter() - stage_started
+                    )
                     # Fail closed: do not run the intent classifier when policy
                     # evaluation did not complete reliably.
                     state.guardrail_status = "unavailable"
@@ -88,6 +105,12 @@ class RequestWorkflow:
                         state.request_id,
                     )
                     return state
+
+                self._metrics.observe_stage(
+                    "guardrail_llm",
+                    "blocked" if assessment.flagged else "ok",
+                    time.perf_counter() - stage_started,
+                )
 
                 state.guardrail_topics = assessment.topics
                 if assessment.flagged:
@@ -109,6 +132,7 @@ class RequestWorkflow:
                     return state
 
             try:
+                stage_started = time.perf_counter()
                 with tracer.start_as_current_span("cctv.intent_classification"):
                     classification = await self._classifier.classify(
                         guardrail_result.normalized_message
@@ -118,6 +142,9 @@ class RequestWorkflow:
                 state.classification_source = "llm"
                 state.workflow_status = "classified"
             except LLMClassifierError:
+                self._metrics.observe_stage(
+                    "classifier", "error", time.perf_counter() - stage_started
+                )
                 # Fail closed to a clarification path; do not invent a camera route.
                 state.intent = IntentLabel.INTENT_CLARIFY
                 state.classification_reason = (
@@ -127,12 +154,32 @@ class RequestWorkflow:
                 state.workflow_status = "classification_fallback"
                 workflow_span.set_status(Status(StatusCode.ERROR, "classification fallback"))
                 logger.warning("Request used classifier fallback request_id=%s", state.request_id)
+            else:
+                self._metrics.observe_stage(
+                    "classifier", "ok", time.perf_counter() - stage_started
+                )
             workflow_span.set_attribute("cctv.intent", state.intent.value)
             workflow_span.set_attribute("cctv.workflow_status", state.workflow_status)
-            state.agent_response = await self._agent_router.invoke(
-                state.intent,
-                state.normalized_message or state.user_message,
-            )
+            stage_started = time.perf_counter()
+            try:
+                agent_result = await self._agent_router.invoke(
+                    state.intent,
+                    state.normalized_message or state.user_message,
+                    self._camera_catalog,
+                    state.principal.allowed_camera_ids,
+                )
+            except CrewAIExecutionError:
+                self._metrics.observe_stage("agent", "error", time.perf_counter() - stage_started)
+                state.workflow_status = "agent_unavailable"
+                state.agent_response = "The camera assistant is temporarily unavailable. Please try again."
+                state.classification_reason = "The selected camera assistant could not complete this request."
+                workflow_span.set_status(Status(StatusCode.ERROR, "agent unavailable"))
+                workflow_span.set_attribute("cctv.workflow_status", state.workflow_status)
+                logger.warning("Request agent unavailable request_id=%s", state.request_id)
+                return state
+            self._metrics.observe_stage("agent", "ok", time.perf_counter() - stage_started)
+            state.agent_response = agent_result.answer
+            state.observation_metadata = agent_result.observation_metadata
             workflow_span.set_attribute("cctv.agent_response.length", len(state.agent_response))
             logger.info(
                 "Request workflow completed request_id=%s status=%s intent=%s source=%s",

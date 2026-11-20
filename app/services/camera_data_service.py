@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,7 @@ class CameraSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str
+    data_status: Literal["mock", "fresh", "stale", "unavailable"]
     camera_id: str
     captured_at: datetime
     requested_entity: str
@@ -34,6 +35,7 @@ class ParkingSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str
+    data_status: Literal["mock", "fresh", "stale", "unavailable"]
     camera_id: str
     captured_at: datetime
     total_spaces: int = Field(ge=0)
@@ -58,6 +60,7 @@ class CameraDataService(Protocol):
     def fetch_parking_summary(
         self,
         *,
+        camera_id: str,
         metric_requested: str,
         user_question: str,
     ) -> ParkingSummary: ...
