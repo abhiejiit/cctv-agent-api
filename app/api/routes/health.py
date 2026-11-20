@@ -63,16 +63,40 @@ async def readiness(request: Request, response: Response) -> HealthResponse:
 
     llm_status = model_status(settings.llm)
     guardrail_status = model_status(settings.guardrail_llm) if guardrail_enabled else "disabled"
-    if llm_status != "reachable" or guardrail_status not in {"reachable", "disabled"}:
-        logger.warning("LLM readiness check failed llm=%s guardrail=%s", llm_status, guardrail_status)
+    if not settings.conversation_history.enabled:
+        history_status = "disabled"
+    else:
+        history_service = getattr(request.app.state, "conversation_history_service", None)
+        try:
+            history_status = "reachable" if history_service and await history_service.ping() else "unreachable"
+        except Exception as exc:
+            history_status = "unreachable"
+            logger.warning("Redis readiness check failed error_type=%s", type(exc).__name__)
+    if (
+        llm_status != "reachable"
+        or guardrail_status not in {"reachable", "disabled"}
+        or history_status == "unreachable"
+    ):
+        logger.warning(
+            "Dependency readiness check failed llm=%s guardrail=%s conversation_history=%s",
+            llm_status,
+            guardrail_status,
+            history_status,
+        )
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return HealthResponse(
             status="unavailable",
             llm=llm_status,
             guardrail_llm=guardrail_status,
+            conversation_history=history_status,
         )
-    logger.debug("LLM readiness check succeeded")
-    return HealthResponse(status="ok", llm=llm_status, guardrail_llm=guardrail_status)
+    logger.debug("Dependency readiness check succeeded")
+    return HealthResponse(
+        status="ok",
+        llm=llm_status,
+        guardrail_llm=guardrail_status,
+        conversation_history=history_status,
+    )
 
 
 @router.get("/metrics", include_in_schema=False)

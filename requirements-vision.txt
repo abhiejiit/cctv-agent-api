@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Optional dependencies for object_detection_YOLO.py and future camera workers.
+ultralytics
+pandas
+numpy

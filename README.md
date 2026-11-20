@@ -2,8 +2,9 @@
 
 Mock-backed CCTV question-answering API. Requests pass through authentication,
 input guardrails, LLM intent classification, and a CrewAI agent that can call a
-camera-scoped tool. The tools currently return synthetic fixtures. There is no
-live video ingestion, MongoDB persistence, or Redis conversation history yet.
+camera-scoped tool. The tools currently return synthetic fixtures. Recent
+conversation context is stored in Redis; live video ingestion and MongoDB
+persistence are not implemented yet.
 
 ## Requirements
 
@@ -21,6 +22,33 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ollama pull llama3
 ```
+
+Start Redis locally in a separate terminal:
+
+```bash
+docker run --rm --name cctv-redis -p 6379:6379 redis:7-alpine
+```
+
+Conversation history is enabled by default. The API stores at most five
+completed exchanges (five user messages and five agent replies) per authenticated
+user and household. When a sixth exchange is appended, Redis removes the oldest
+pair. The queue expires after seven days without activity. Override the local
+Redis URL with `CCTV_REDIS_URL`; for authenticated Redis deployments, put the
+credentials in that environment variable rather than YAML. If Redis is
+unavailable, camera requests continue without history and `/health/ready`
+reports the dependency as unavailable.
+
+For Jaeger debugging, `tracing.capture_conversation_history` is enabled in the
+development config. The request workflow parent span and the
+`cctv.conversation_history.load` / `cctv.conversation_history.append` child spans
+show the queue as formatted JSON in `cctv.conversation_history.queue`, along
+with its status, turn count, and truncation flag. This attribute contains user
+messages and agent replies. Turn it off outside local debugging, or set
+`CCTV_TRACE_CAPTURE_CONVERSATION_HISTORY=false` to override it.
+
+Clear the current authenticated user's queue with `POST /conversation-history`.
+The endpoint deletes only that household/user key and returns `{"status":"cleared"}`;
+it does not flush the shared Redis database.
 
 The API dependency set does not install the optional vision experiment
 packages. Install `requirements-vision.txt` only when working on the local YOLO
@@ -58,6 +86,14 @@ from it. Each agent also has a configurable `capabilities` list. When a camera
 agent cannot resolve a request from its tool result, it politely explains the
 limit and offers only its listed capabilities. The greetings agent responds
 only with the capability menu so the user can choose a supported question.
+The classifier and selected agent review all recent exchanges as context, so
+they can follow topic changes, corrections, unresolved clarifications, and
+short references across turns. The current request remains primary, and
+history is passed as untrusted context. Current camera-state
+questions still require a camera-tool call; prior answers may be stale. Only
+guardrail-allowed requests with an agent response are appended. Blocked and
+failed requests are not saved. Redis keys are derived from a hash of the
+authenticated household and user identifiers.
 Tool names and durations are logged in CrewAI spans. Prompt, response, and tool
 payload content capture is disabled by default; enable it only in a controlled
 development environment. Greetings, clarification, and out-of-scope agents
@@ -137,6 +173,7 @@ the same capture settings.
 
 The capture settings can also be overridden with `CCTV_TRACE_CAPTURE_LOGS`,
 `CCTV_TRACE_CAPTURE_LLM_PROMPTS`, `CCTV_TRACE_CAPTURE_LLM_OUTPUTS`,
+`CCTV_TRACE_CAPTURE_CONVERSATION_HISTORY`,
 `CCTV_TRACE_CAPTURE_TOOL_INPUTS`, and `CCTV_TRACE_CAPTURE_TOOL_OUTPUTS` using
 `true` or `false`.
 
@@ -277,8 +314,9 @@ header authentication is rejected when `CCTV_ENVIRONMENT=production`.
 - Guardrails are deterministic, configurable checks, not a complete defense
   against every adversarial message. Keep the classifier instruction bounded
   and never treat model output as authorization.
-- This endpoint has no conversation history yet; Redis/MongoDB history arrives
-  in the persistence step of the architecture.
+- Conversation history is Redis-backed and process-independent, but this first
+  version uses one rolling history per user and household rather than separate
+  named chat threads.
 - The rate limiter is in-process and applies to one API process. Use shared
   storage when operating multiple replicas.
 - Keep the LLM provider on a trusted network and apply appropriate network

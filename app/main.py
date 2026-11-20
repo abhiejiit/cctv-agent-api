@@ -23,6 +23,10 @@ from app.orchestration.intent_router import IntentAgentRouter
 from app.security.input_guardrails import InputGuardrails
 from app.security.llm_input_filter import LLMInputFilter
 from app.security.rate_limits import InMemoryRateLimiter
+from app.services.conversation_history_service import (
+    ConversationHistoryService,
+    create_redis_client,
+)
 from app.telemetry.logging import bind_request_log_span, configure_logging, reset_request_log_span
 from app.telemetry.metrics import AppMetrics
 from app.telemetry.tracing import configure_tracing, flush_tracing, instrument_http_client
@@ -54,7 +58,20 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
         provider = configure_tracing(application, configured_settings.tracing)
         application.state.tracer_provider = provider
+        history_service: ConversationHistoryService | None = None
         try:
+            if configured_settings.conversation_history.enabled:
+                redis_client = create_redis_client(
+                    configured_settings.conversation_history.redis_url,
+                    configured_settings.conversation_history.connect_timeout_seconds,
+                    configured_settings.conversation_history.socket_timeout_seconds,
+                )
+                history_service = ConversationHistoryService(
+                    redis_client,
+                    configured_settings.conversation_history.key_prefix,
+                    configured_settings.conversation_history.ttl_seconds,
+                )
+            application.state.conversation_history_service = history_service
             async with httpx.AsyncClient(timeout=timeout) as client:
                 instrument_http_client(client, provider)
                 application.state.http_client = client
@@ -90,12 +107,21 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     agent_router=agent_router,
                     camera_catalog=configured_settings.camera_catalog,
                     metrics=application.state.metrics,
+                    conversation_history_service=history_service,
+                    tracing_config=configured_settings.tracing,
                 )
                 application.state.rate_limiter = InMemoryRateLimiter(
                     configured_settings.api.max_requests_per_minute
                 )
                 yield
         finally:
+            if history_service is not None:
+                try:
+                    await history_service.close()
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Redis client close failed error_type=%s", type(exc).__name__
+                    )
             flush_tracing(provider)
 
     application = FastAPI(

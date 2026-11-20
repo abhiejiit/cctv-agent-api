@@ -131,7 +131,10 @@ async def ask_cctv_agent(
                 data_status=result.observation_metadata["data_status"],
                 captured_at=result.observation_metadata["captured_at"],
             )
-            if observation.data_status == "mock":
+            if (
+                observation.data_status == "mock"
+                and not answer.startswith("Demo data only (mock snapshot, not live footage):")
+            ):
                 answer = f"Demo data only (mock snapshot, not live footage): {answer}"
 
         response_body = AskResponse(

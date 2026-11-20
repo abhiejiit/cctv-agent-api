@@ -134,12 +134,24 @@ tracing:
   sample_ratio: 1.0
   export_timeout_seconds: 5
   capture_logs_in_spans: true
-  capture_llm_prompts: false
-  capture_llm_outputs: false
+  capture_llm_prompts: true
+  capture_llm_outputs: true
+  # Development-only debugging: this includes conversation text in Jaeger.
+  capture_conversation_history: true
   capture_tool_inputs: false
   capture_tool_outputs: false
 
 metrics:
   enabled: true
+
+conversation_history:
+  enabled: true
+  # Override with CCTV_REDIS_URL; credentials should be supplied through env.
+  redis_url: redis://localhost:6379/0
+  redis_url_environment_variable: CCTV_REDIS_URL
+  key_prefix: cctv:conversation
+  ttl_seconds: 604800
+  connect_timeout_seconds: 1
+  socket_timeout_seconds: 1
 
 camera_catalog_file: configs/cameras.yaml

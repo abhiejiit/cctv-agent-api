@@ -6,7 +6,9 @@ from collections import Counter, defaultdict
 from threading import Lock
 
 
-_STAGES = frozenset({"guardrails", "guardrail_llm", "classifier", "agent", "camera_tool", "request"})
+_STAGES = frozenset(
+    {"guardrails", "guardrail_llm", "classifier", "agent", "camera_tool", "conversation_history", "request"}
+)
 _OUTCOMES = frozenset({"ok", "error", "timeout", "rejected", "blocked"})
 _OBSERVATION_STATUSES = frozenset({"mock", "fresh", "stale", "unavailable"})
 _AGE_BUCKETS = frozenset({"le_10s", "le_60s", "gt_60s"})

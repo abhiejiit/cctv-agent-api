@@ -181,6 +181,7 @@ class TracingConfig(StrictModel):
     capture_logs_in_spans: bool = True
     capture_llm_prompts: bool = False
     capture_llm_outputs: bool = False
+    capture_conversation_history: bool = False
     capture_tool_inputs: bool = False
     capture_tool_outputs: bool = False
 
@@ -188,6 +189,16 @@ class TracingConfig(StrictModel):
 class MetricsConfig(StrictModel):
     enabled: bool = True
     auth_token_environment_variable: str | None = None
+
+
+class ConversationHistoryConfig(StrictModel):
+    enabled: bool = True
+    redis_url: str = "redis://localhost:6379/0"
+    redis_url_environment_variable: str = Field(default="CCTV_REDIS_URL", min_length=1, max_length=128)
+    key_prefix: str = Field(default="cctv:conversation", min_length=1, max_length=128)
+    ttl_seconds: int = Field(default=604800, ge=60, le=31536000)
+    connect_timeout_seconds: float = Field(default=1.0, gt=0, le=30)
+    socket_timeout_seconds: float = Field(default=1.0, gt=0, le=30)
 
 
 class CameraIntentConfig(StrictModel):
@@ -254,6 +265,7 @@ class AppSettings(StrictModel):
     agent_config_file: str = "configs/agent.yaml"
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    conversation_history: ConversationHistoryConfig = Field(default_factory=ConversationHistoryConfig)
     camera_catalog_file: str = "configs/cameras.yaml"
     camera_catalog: CameraCatalog | None = None
 
@@ -277,6 +289,7 @@ def _apply_environment_overrides(raw: dict) -> dict:
     data["application"] = dict(data.get("application", {}))
     data["llm"] = dict(data.get("llm", {}))
     data["tracing"] = dict(data.get("tracing", {}))
+    data["conversation_history"] = dict(data.get("conversation_history", {}))
 
     environment = os.getenv("CCTV_ENVIRONMENT")
     if environment:
@@ -303,10 +316,18 @@ def _apply_environment_overrides(raw: dict) -> dict:
     if otlp_endpoint:
         data["tracing"]["otlp_endpoint"] = otlp_endpoint
 
+    redis_url_env_name = data["conversation_history"].get(
+        "redis_url_environment_variable", "CCTV_REDIS_URL"
+    )
+    redis_url = os.getenv(redis_url_env_name)
+    if redis_url:
+        data["conversation_history"]["redis_url"] = redis_url
+
     capture_overrides = {
         "CCTV_TRACE_CAPTURE_LOGS": "capture_logs_in_spans",
         "CCTV_TRACE_CAPTURE_LLM_PROMPTS": "capture_llm_prompts",
         "CCTV_TRACE_CAPTURE_LLM_OUTPUTS": "capture_llm_outputs",
+        "CCTV_TRACE_CAPTURE_CONVERSATION_HISTORY": "capture_conversation_history",
         "CCTV_TRACE_CAPTURE_TOOL_INPUTS": "capture_tool_inputs",
         "CCTV_TRACE_CAPTURE_TOOL_OUTPUTS": "capture_tool_outputs",
     }

@@ -43,3 +43,9 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "unavailable"]
     llm: Literal["reachable", "unreachable", "model_unavailable"] | None = None
     guardrail_llm: Literal["reachable", "unreachable", "model_unavailable", "disabled"] | None = None
+    conversation_history: Literal["reachable", "unreachable", "disabled"] | None = None
+
+
+class ClearConversationHistoryResponse(BaseModel):
+    status: Literal["cleared"]
+    request_id: str

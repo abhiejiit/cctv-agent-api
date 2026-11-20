@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
+from collections.abc import Sequence
 
 import httpx
 
@@ -11,6 +13,7 @@ from app.config import CameraCatalog, LLMConfig, TracingConfig
 from app.planning.models import IntentClassification, IntentLabel
 from app.planning.policy import build_system_prompt
 from app.planning.validation import parse_intent_classification
+from app.services.conversation_history_service import ConversationTurn
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
@@ -36,12 +39,29 @@ class LLMIntentClassifier:
         self._tracing_config = tracing_config
         self._system_prompt = build_system_prompt(catalog)
 
-    async def classify(self, message: str) -> IntentClassification:
+    async def classify(
+        self,
+        message: str,
+        conversation_history: Sequence[ConversationTurn] = (),
+    ) -> IntentClassification:
+        contextual_request = json.dumps(
+            {
+                "conversation_history": [
+                    {
+                        "user_message": turn.user_message,
+                        "agent_message": turn.agent_message,
+                    }
+                    for turn in conversation_history
+                ],
+                "current_message": message,
+            },
+            ensure_ascii=False,
+        )
         payload = {
             "model": self._config.model,
             "messages": [
                 {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": message},
+                {"role": "user", "content": contextual_request},
             ],
             "format": IntentClassification.model_json_schema(),
             "stream": False,
@@ -59,9 +79,10 @@ class LLMIntentClassifier:
             span.set_attribute("llm.thinking_model", self._config.thinking_model)
             span.set_attribute("llm.think", self._config.think)
             span.set_attribute("llm.request.timeout_seconds", self._config.timeout_seconds)
+            span.set_attribute("llm.conversation_history.turn_count", len(conversation_history))
             if self._tracing_config.capture_llm_prompts:
                 span.set_attribute("llm.prompt.system", self._system_prompt)
-                span.set_attribute("llm.prompt.user", message)
+                span.set_attribute("llm.prompt.user", contextual_request)
             started_at = time.perf_counter()
             response_data: dict = {}
             logger.debug("LLM classification started model=%s", self._config.model)

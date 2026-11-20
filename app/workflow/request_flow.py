@@ -1,23 +1,47 @@
 """Request flow through guardrails, classification, and selected CrewAI agent."""
 
 import logging
+import json
 import time
 
-from app.config import CameraCatalog
+from app.config import CameraCatalog, TracingConfig
 from app.orchestration.intent_router import CrewAIExecutionError, IntentAgentRouter
 from app.planning.classifier import LLMClassifierError, LLMIntentClassifier
 from app.planning.models import IntentLabel
 from app.security.input_guardrails import InputGuardrails
 from app.security.llm_input_filter import LLMInputFilter, LLMInputGuardrailError
+from app.services.conversation_history_service import ConversationHistoryService
 from app.telemetry.metrics import AppMetrics
 from app.workflow.request_state import RequestState
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import Span, Status, StatusCode
 
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 GUARDRAIL_END_MESSAGE = "we're sorry, we cannot proceed with that"
+_MAX_HISTORY_TRACE_CHARACTERS = 24_000
+
+
+def _record_history_span(span: Span, state: RequestState, capture_content: bool) -> None:
+    """Record queue metadata, optionally including the readable queue contents."""
+    turns = state.conversation_history
+    span.set_attribute("cctv.conversation_history.status", state.conversation_history_status)
+    span.set_attribute("cctv.conversation_history.turn_count", len(turns))
+    span.set_attribute("cctv.conversation_history.capture_content", capture_content)
+    if not capture_content:
+        return
+
+    queue_json = json.dumps(
+        [turn.model_dump(mode="json") for turn in turns],
+        ensure_ascii=False,
+        indent=2,
+    )
+    truncated = len(queue_json) > _MAX_HISTORY_TRACE_CHARACTERS
+    if truncated:
+        queue_json = queue_json[:_MAX_HISTORY_TRACE_CHARACTERS] + "\n...[truncated]"
+    span.set_attribute("cctv.conversation_history.queue", queue_json)
+    span.set_attribute("cctv.conversation_history.queue_truncated", truncated)
 
 
 class RequestWorkflow:
@@ -29,6 +53,8 @@ class RequestWorkflow:
         agent_router: IntentAgentRouter,
         camera_catalog: CameraCatalog,
         metrics: AppMetrics,
+        conversation_history_service: ConversationHistoryService | None = None,
+        tracing_config: TracingConfig | None = None,
     ) -> None:
         self._guardrails = guardrails
         self._llm_input_filter = llm_input_filter
@@ -36,12 +62,53 @@ class RequestWorkflow:
         self._agent_router = agent_router
         self._camera_catalog = camera_catalog
         self._metrics = metrics
+        self._conversation_history_service = conversation_history_service
+        self._tracing_config = tracing_config or TracingConfig()
 
     async def run(self, state: RequestState) -> RequestState:
         """Inspect input, record findings, then classify into a closed intent set."""
         with tracer.start_as_current_span("cctv.request.workflow") as workflow_span:
             workflow_span.set_attribute("cctv.request_id", state.request_id)
             logger.info("Request workflow started request_id=%s", state.request_id)
+            if self._conversation_history_service is None:
+                state.conversation_history_status = "disabled"
+                _record_history_span(
+                    workflow_span, state, self._tracing_config.capture_conversation_history
+                )
+            else:
+                history_started = time.perf_counter()
+                with tracer.start_as_current_span("cctv.conversation_history.load") as history_span:
+                    try:
+                        state.conversation_history = (
+                            await self._conversation_history_service.get_recent_turns(state.principal)
+                        )
+                        state.conversation_history_status = "available"
+                        _record_history_span(
+                            history_span, state, self._tracing_config.capture_conversation_history
+                        )
+                        _record_history_span(
+                            workflow_span, state, self._tracing_config.capture_conversation_history
+                        )
+                        self._metrics.observe_stage(
+                            "conversation_history", "ok", time.perf_counter() - history_started
+                        )
+                    except Exception as exc:
+                        state.conversation_history = []
+                        state.conversation_history_status = "unavailable"
+                        history_span.set_attribute("error.type", type(exc).__name__)
+                        _record_history_span(
+                            history_span, state, self._tracing_config.capture_conversation_history
+                        )
+                        _record_history_span(
+                            workflow_span, state, self._tracing_config.capture_conversation_history
+                        )
+                        self._metrics.observe_stage(
+                            "conversation_history", "error", time.perf_counter() - history_started
+                        )
+                        logger.warning(
+                            "Conversation history unavailable operation=load error_type=%s",
+                            type(exc).__name__,
+                        )
             with tracer.start_as_current_span("cctv.input_guardrails") as guardrail_span:
                 stage_started = time.perf_counter()
                 guardrail_result = self._guardrails.inspect(state.user_message)
@@ -135,7 +202,8 @@ class RequestWorkflow:
                 stage_started = time.perf_counter()
                 with tracer.start_as_current_span("cctv.intent_classification"):
                     classification = await self._classifier.classify(
-                        guardrail_result.normalized_message
+                        guardrail_result.normalized_message,
+                        state.conversation_history,
                     )
                 state.intent = classification.intent
                 state.classification_reason = classification.reason
@@ -167,6 +235,7 @@ class RequestWorkflow:
                     state.normalized_message or state.user_message,
                     self._camera_catalog,
                     state.principal.allowed_camera_ids,
+                    state.conversation_history,
                 )
             except CrewAIExecutionError:
                 self._metrics.observe_stage("agent", "error", time.perf_counter() - stage_started)
@@ -180,7 +249,45 @@ class RequestWorkflow:
             self._metrics.observe_stage("agent", "ok", time.perf_counter() - stage_started)
             state.agent_response = agent_result.answer
             state.observation_metadata = agent_result.observation_metadata
+            if (
+                state.observation_metadata
+                and state.observation_metadata.get("data_status") == "mock"
+                and not state.agent_response.startswith("Demo data only (mock snapshot, not live footage):")
+            ):
+                state.agent_response = (
+                    "Demo data only (mock snapshot, not live footage): " + state.agent_response
+                )
             workflow_span.set_attribute("cctv.agent_response.length", len(state.agent_response))
+            if self._conversation_history_service is not None and state.guardrail_status == "allowed":
+                history_started = time.perf_counter()
+                with tracer.start_as_current_span("cctv.conversation_history.append") as history_span:
+                    try:
+                        state.conversation_history = await self._conversation_history_service.append_turn(
+                            state.principal,
+                            state.normalized_message or state.user_message,
+                            state.agent_response,
+                        )
+                        state.conversation_history_status = "available"
+                        self._metrics.observe_stage(
+                            "conversation_history", "ok", time.perf_counter() - history_started
+                        )
+                    except Exception as exc:
+                        state.conversation_history_status = "unavailable"
+                        history_span.set_attribute("cctv.conversation_history.status", "unavailable")
+                        history_span.set_attribute("error.type", type(exc).__name__)
+                        self._metrics.observe_stage(
+                            "conversation_history", "error", time.perf_counter() - history_started
+                        )
+                        logger.warning(
+                            "Conversation history unavailable operation=append error_type=%s",
+                            type(exc).__name__,
+                        )
+                    _record_history_span(
+                        history_span, state, self._tracing_config.capture_conversation_history
+                    )
+                    _record_history_span(
+                        workflow_span, state, self._tracing_config.capture_conversation_history
+                    )
             logger.info(
                 "Request workflow completed request_id=%s status=%s intent=%s source=%s",
                 state.request_id,

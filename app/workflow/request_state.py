@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth.principal import Principal
 from app.planning.models import IntentLabel
+from app.services.conversation_history_service import ConversationTurn
 
 
 class RequestState(BaseModel):
@@ -12,6 +13,8 @@ class RequestState(BaseModel):
     request_id: str
     principal: Principal
     user_message: str
+    conversation_history: list[ConversationTurn] = Field(default_factory=list)
+    conversation_history_status: str = "pending"
     normalized_message: str = ""
     guardrail_status: str = "pending"
     guardrail_findings: list[str] = Field(default_factory=list)
