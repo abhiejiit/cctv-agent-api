@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,13 @@ from fastapi import HTTPException
 
 from app.auth.principal import Principal
 from app.config import TracingConfig, load_settings
+from app.llm_provider import (
+    build_request_payload,
+    create_crewai_llm,
+    get_provider,
+    parse_response,
+    request_url,
+)
 from app.main import create_app
 from app.orchestration.camera_tools import (
     bind_tool_invocation_context,
@@ -37,10 +45,22 @@ from app.workflow.request_flow import RequestWorkflow, _record_history_span
 from app.workflow.request_state import RequestState
 
 
+def load_test_settings():
+    """Keep legacy suite fixtures on Ollama unless a Gemini case opts in."""
+    settings = load_settings()
+    settings.llm.provider = "ollama"
+    settings.llm.base_url = "http://localhost:11434"
+    settings.llm.model = "llama3"
+    settings.guardrail_llm.provider = "ollama"
+    settings.guardrail_llm.base_url = "http://localhost:11434"
+    settings.guardrail_llm.model = "llama3"
+    return settings
+
+
 class CoreHardeningTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.settings = load_settings()
+        cls.settings = load_test_settings()
 
     def test_normalization_does_not_log_user_content(self) -> None:
         private_message = "Door query with private marker"
@@ -137,6 +157,159 @@ class CoreHardeningTests(unittest.TestCase):
                     await classifier.classify("Is there a car in parking?")
 
         asyncio.run(classify())
+
+    def test_gemini_classifier_uses_generate_content_and_structured_json(self) -> None:
+        async def classify() -> None:
+            secret = "test-gemini-key-do-not-log"
+            gemini_config = self.settings.llm.model_copy(
+                update={"provider": "gemini", "model": "gemini-test-model"}
+            )
+
+            async def handler(request: httpx.Request) -> httpx.Response:
+                self.assertEqual(
+                    str(request.url),
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-test-model:generateContent",
+                )
+                self.assertEqual(request.headers["x-goog-api-key"], secret)
+                self.assertEqual(request.headers["content-type"], "application/json")
+                body = json.loads(request.content)
+                generation = body["generationConfig"]
+                self.assertEqual(generation["responseMimeType"], "application/json")
+                self.assertEqual(generation["responseJsonSchema"]["type"], "object")
+                self.assertEqual(
+                    set(generation["responseJsonSchema"]["properties"]),
+                    {"intent", "reason"},
+                )
+                self.assertIn("systemInstruction", body)
+                request_context = json.loads(body["contents"][0]["parts"][0]["text"])
+                self.assertEqual(request_context["current_message"], "Is there a car in parking?")
+                return httpx.Response(
+                    200,
+                    json={
+                        "candidates": [{
+                            "content": {"parts": [{"text": '{"intent":"parking","reason":"The user asks about the parking area."}'}]},
+                            "finishReason": "STOP",
+                        }],
+                        "usageMetadata": {"candidatesTokenCount": 21},
+                    },
+                )
+
+            with patch.dict(os.environ, {"GEMINI_API_KEY": secret}):
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                    classifier = LLMIntentClassifier(
+                        client,
+                        gemini_config,
+                        self.settings.camera_catalog,
+                        TracingConfig(enabled=False),
+                    )
+                    result = await classifier.classify("Is there a car in parking?")
+                    self.assertEqual(result.intent, IntentLabel.PARKING)
+
+        asyncio.run(classify())
+
+    def test_gemini_guardrail_uses_json_schema_and_parses_candidate(self) -> None:
+        async def assess() -> None:
+            secret = "test-gemini-key"
+            gemini_config = self.settings.guardrail_llm.model_copy(
+                update={"provider": "gemini", "model": "gemini-test-model"}
+            )
+
+            async def handler(request: httpx.Request) -> httpx.Response:
+                self.assertEqual(request.headers["x-goog-api-key"], secret)
+                self.assertEqual(request.headers["content-type"], "application/json")
+                body = json.loads(request.content)
+                self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
+                self.assertEqual(
+                    set(body["generationConfig"]["responseJsonSchema"]["properties"]),
+                    {"flagged", "topics"},
+                )
+                return httpx.Response(
+                    200,
+                    json={
+                        "candidates": [{
+                            "content": {"parts": [{"text": '{"flagged":true,"topics":["footage_tampering"]}'}]},
+                            "finishReason": "STOP",
+                        }]
+                    },
+                )
+
+            with patch.dict(os.environ, {"GEMINI_API_KEY": secret}):
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                    guardrail = LLMInputFilter(
+                        client,
+                        gemini_config,
+                        self.settings.guardrails.llm_filter,
+                        TracingConfig(enabled=False),
+                    )
+                    result = await guardrail.assess("Delete footage")
+                    self.assertTrue(result.flagged)
+
+        asyncio.run(assess())
+
+    def test_gemini_thought_parts_are_separate_from_answer_content(self) -> None:
+        parsed = parse_response(
+            self.settings.llm.model_copy(update={"provider": "gemini"}),
+            {"candidates": [{"content": {"parts": [
+                {"text": "private thought", "thought": True},
+                {"text": '{"intent":"greetings","reason":"The user greets the assistant."}'},
+            ]}}]},
+        )
+        self.assertEqual(parsed.thinking, "private thought")
+        self.assertTrue(parsed.content.startswith('{"intent"'))
+
+    def test_gemini_defaults_to_google_api_url_and_uses_secret_header(self) -> None:
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "header-only-secret"}):
+            config = self.settings.llm.model_copy(update={"provider": "gemini", "model": "models/gemini-x"})
+            self.assertEqual(
+                request_url(config),
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-x:generateContent",
+            )
+        payload = build_request_payload(
+            config,
+            system_prompt="Return JSON",
+            user_message="hello",
+            response_schema=IntentClassification.model_json_schema(),
+        )
+        self.assertNotIn("header-only-secret", json.dumps(payload))
+
+    def test_crewai_model_construction_is_selected_by_provider_adapter(self) -> None:
+        import crewai
+
+        ollama_config = self.settings.llm.model_copy(
+            update={"provider": "ollama", "model": "llama3"}
+        )
+        gemini_config = self.settings.llm.model_copy(
+            update={"provider": "gemini", "model": "gemini-3.5-flash-lite"}
+        )
+
+        with patch.object(crewai, "LLM", return_value="mock-llm") as crewai_llm:
+            self.assertEqual(create_crewai_llm(ollama_config), "mock-llm")
+            crewai_llm.assert_called_once_with(
+                model="ollama_chat/llama3",
+                base_url="http://localhost:11434",
+                temperature=0.0,
+                max_tokens=256,
+                timeout=35.0,
+            )
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "factory-test-key"}):
+            with patch.object(crewai, "LLM", return_value="mock-llm") as crewai_llm:
+                self.assertEqual(create_crewai_llm(gemini_config), "mock-llm")
+                crewai_llm.assert_called_once_with(
+                    model="gemini/gemini-3.5-flash-lite",
+                    api_key="factory-test-key",
+                    temperature=0.0,
+                    max_tokens=256,
+                    timeout=35.0,
+                )
+        self.assertEqual(get_provider("ollama").name, "ollama")
+        self.assertEqual(get_provider("gemini").name, "gemini")
+
+    def test_missing_gemini_key_reports_the_environment_visible_to_the_app(self) -> None:
+        config = self.settings.llm.model_copy(update={"provider": "gemini"})
+        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            with self.assertRaisesRegex(ValueError, "Set GEMINI_API_KEY in the environment"):
+                get_provider("gemini").crewai_model_options(config)
 
     def test_topical_guardrail_returns_flagged_topic(self) -> None:
         async def assess() -> None:
@@ -377,7 +550,7 @@ class CoreHardeningTests(unittest.TestCase):
 
 class EndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.settings = load_settings()
+        self.settings = load_test_settings()
         self.settings.tracing = TracingConfig(enabled=False)
         self.settings.conversation_history.enabled = False
 
@@ -493,6 +666,43 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(response.json()["guardrail_llm"], "reachable")
             self.assertEqual(fake_client.calls, 1)
 
+    def test_readiness_checks_gemini_model_and_authorizes_model_listing(self) -> None:
+        self.settings.llm.provider = "gemini"
+        self.settings.llm.model = "gemini-test-model"
+        self.settings.llm.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self.settings.guardrails.llm_filter.enabled = False
+
+        class Response:
+            def raise_for_status(self) -> None:
+                pass
+
+            def json(self) -> dict:
+                return {
+                    "models": [{
+                        "name": "models/gemini-test-model",
+                        "supportedGenerationMethods": ["generateContent"],
+                    }]
+                }
+
+        class FakeClient:
+            async def get(self, url: str, *, headers: dict[str, str], **_: object) -> Response:
+                self.url = url
+                self.headers = headers
+                return Response()
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "readiness-test-key"}):
+            with TestClient(create_app(self.settings)) as client:
+                fake_client = FakeClient()
+                client.app.state.http_client = fake_client
+                response = client.get("/health/ready")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["llm"], "reachable")
+                self.assertEqual(
+                    fake_client.url,
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                )
+                self.assertEqual(fake_client.headers["x-goog-api-key"], "readiness-test-key")
+
     def test_readiness_reports_missing_guardrail_model(self) -> None:
         class Response:
             def raise_for_status(self) -> None:
@@ -539,7 +749,7 @@ class EndpointTests(unittest.TestCase):
 
 class WorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.settings = load_settings()
+        self.settings = load_test_settings()
         self.metrics = AppMetrics()
         camera_ids = frozenset(
             definition.camera_id

@@ -114,9 +114,10 @@ class GuardrailConfig(StrictModel):
 class LLMConfig(StrictModel):
     """Generic LLM endpoint configuration with a selectable provider adapter."""
 
-    provider: Literal["ollama"] = "ollama"
+    provider: Literal["ollama", "gemini"] = "ollama"
     base_url: HttpUrl = "http://localhost:11434"
     model: str = Field(default="llama3.2:3b", min_length=1, max_length=128)
+    api_key_environment_variable: str = Field(default="GEMINI_API_KEY", min_length=1, max_length=128)
     thinking_model: bool = False
     think: bool = False
     chat_path: str = "/api/chat"
@@ -125,6 +126,16 @@ class LLMConfig(StrictModel):
     temperature: float = Field(default=0.0, ge=0, le=2)
     max_output_tokens: int = Field(default=128, ge=1, le=512)
     keep_alive: str = Field(default="5m", min_length=1, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def set_provider_default_base_url(cls, values: object) -> object:
+        if not isinstance(values, dict):
+            return values
+        configured = dict(values)
+        if "base_url" not in configured and configured.get("provider") == "gemini":
+            configured["base_url"] = "https://generativelanguage.googleapis.com/v1beta"
+        return configured
 
 
 class IntentAgentConfig(StrictModel):
@@ -288,6 +299,7 @@ def _apply_environment_overrides(raw: dict) -> dict:
     data = {**raw}
     data["application"] = dict(data.get("application", {}))
     data["llm"] = dict(data.get("llm", {}))
+    data["guardrail_llm"] = dict(data.get("guardrail_llm", {}))
     data["tracing"] = dict(data.get("tracing", {}))
     data["conversation_history"] = dict(data.get("conversation_history", {}))
 
@@ -295,18 +307,16 @@ def _apply_environment_overrides(raw: dict) -> dict:
     if environment:
         data["application"]["environment"] = environment
 
-    llm_base_url = os.getenv("CCTV_LLM_BASE_URL")
-    if llm_base_url:
-        data["llm"]["base_url"] = llm_base_url
-
-    llm_model = os.getenv("CCTV_LLM_MODEL")
-    if llm_model:
-        data["llm"]["model"] = llm_model
-
-    guardrail_llm_model = os.getenv("CCTV_GUARDRAIL_LLM_MODEL")
-    if guardrail_llm_model:
-        data["guardrail_llm"] = dict(data.get("guardrail_llm", {}))
-        data["guardrail_llm"]["model"] = guardrail_llm_model
+    for prefix, key in (("CCTV_LLM", "llm"), ("CCTV_GUARDRAIL_LLM", "guardrail_llm")):
+        for suffix, config_key in (
+            ("PROVIDER", "provider"),
+            ("BASE_URL", "base_url"),
+            ("MODEL", "model"),
+            ("API_KEY_ENVIRONMENT_VARIABLE", "api_key_environment_variable"),
+        ):
+            environment_value = os.getenv(f"{prefix}_{suffix}")
+            if environment_value:
+                data[key][config_key] = environment_value
 
     tracing_enabled = os.getenv("CCTV_TRACING_ENABLED")
     if tracing_enabled is not None:

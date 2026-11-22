@@ -9,10 +9,10 @@ persistence are not implemented yet.
 ## Requirements
 
 - Python 3.11 or newer
-- A locally hosted LLM provider that supports structured output; Ollama is the
-  configured adapter by default
+- A Gemini API key available as `GEMINI_API_KEY` (Gemini 3.5 Flash-Lite is
+  configured in the sample settings; Ollama remains supported)
 - A model available to the configured provider
-- CrewAI with LiteLLM support for local Ollama agent calls
+- CrewAI with LiteLLM and Google Gen AI support for Ollama and Gemini agent calls
 
 ## Setup
 
@@ -20,8 +20,35 @@ persistence are not implemented yet.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-ollama pull llama3
 ```
+
+### Use Gemini API instead of Ollama
+
+The classifier, input guardrail, and CrewAI agents use Gemini in the sample
+configuration. Keep the API key in an environment variable; do not put it in
+YAML or commit it. The model ID in the sample is `gemini-3.5-flash-lite`; change
+it if that model is not enabled for your key:
+
+```yaml
+llm:
+  provider: gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-3.5-flash-lite
+  api_key_environment_variable: GEMINI_API_KEY
+
+guardrail_llm:
+  provider: gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-3.5-flash-lite
+  api_key_environment_variable: GEMINI_API_KEY
+```
+
+Set the key in the shell before starting the API. You can also keep the
+guardrail on Ollama by setting its provider back to `ollama`; the main
+classifier and CrewAI agents use the `llm` setting. Model availability and
+free-tier quotas are controlled by Google for the API key. The application
+readiness endpoint checks that the configured model is listed and supports
+`generateContent`.
 
 Start Redis locally in a separate terminal:
 
@@ -56,8 +83,10 @@ experiment.
 
 The provider, model name, base URL, chat/readiness paths, sampling options,
 request limits, authentication mode, and guardrail patterns are in
-`configs/app.yaml`. Change the provider settings there, or override the URL and
-model with `CCTV_LLM_BASE_URL` and `CCTV_LLM_MODEL`. Camera intent descriptions and aliases are in
+`configs/app.yaml`. Configure each provider there, or override the classifier
+with `CCTV_LLM_PROVIDER`, `CCTV_LLM_BASE_URL`, and `CCTV_LLM_MODEL`. Use
+`CCTV_GUARDRAIL_LLM_PROVIDER`, `CCTV_GUARDRAIL_LLM_BASE_URL`, and
+`CCTV_GUARDRAIL_LLM_MODEL` for the guardrail. Camera intent descriptions and aliases are in
 `configs/cameras.yaml`.
 
 The classifier uses `llm`, while the topical input guardrail
@@ -177,9 +206,9 @@ The capture settings can also be overridden with `CCTV_TRACE_CAPTURE_LOGS`,
 `CCTV_TRACE_CAPTURE_TOOL_INPUTS`, and `CCTV_TRACE_CAPTURE_TOOL_OUTPUTS` using
 `true` or `false`.
 
-The classifier and guardrail can use separate Ollama configurations. Use a
-small non-thinking model for lower latency; choose a thinking model when the
-classification quality improvement justifies the added latency:
+The classifier and guardrail can use separate provider and model settings.
+When using Ollama, a small non-thinking model usually has lower latency; choose
+a thinking model when its classification improvement justifies the added delay:
 
 ```yaml
 # Main intent classifier

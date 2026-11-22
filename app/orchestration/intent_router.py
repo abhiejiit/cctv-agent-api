@@ -12,6 +12,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from app.config import CameraCatalog, CrewAIConfig, IntentAgentConfig, LLMConfig, TracingConfig
+from app.llm_provider import create_crewai_llm
 from app.orchestration.camera_tools import (
     bind_tool_invocation_context,
     reset_tool_invocation_context,
@@ -273,17 +274,10 @@ class IntentAgentRouter:
         conversation_history: tuple[ConversationTurn, ...] = (),
     ) -> str:
         """Build a single-agent, single-task crew and execute it off the event loop."""
-        from crewai import Agent, Crew, LLM, Process, Task
+        from crewai import Agent, Crew, Process, Task
         from app.orchestration.camera_tools import resolve_agent_tools
 
-        base_url = str(self._llm_config.base_url).rstrip("/")
-        llm = LLM(
-            model=f"ollama_chat/{self._llm_config.model}",
-            base_url=base_url,
-            temperature=self._llm_config.temperature,
-            max_tokens=self._llm_config.max_output_tokens,
-            timeout=self._llm_config.timeout_seconds,
-        )
+        llm = create_crewai_llm(self._llm_config)
         tools = resolve_agent_tools(agent_config.tools) if agent_config.tools_enabled else []
         agent_span = trace.get_current_span()
         tool_schemas = {

@@ -14,6 +14,7 @@ from app.planning.models import IntentClassification, IntentLabel
 from app.planning.policy import build_system_prompt
 from app.planning.validation import parse_intent_classification
 from app.services.conversation_history_service import ConversationTurn
+from app.llm_provider import build_request_payload, parse_response, request_headers, request_url
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
@@ -57,22 +58,12 @@ class LLMIntentClassifier:
             },
             ensure_ascii=False,
         )
-        payload = {
-            "model": self._config.model,
-            "messages": [
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": contextual_request},
-            ],
-            "format": IntentClassification.model_json_schema(),
-            "stream": False,
-            "keep_alive": self._config.keep_alive,
-            "options": {
-                "temperature": self._config.temperature,
-                "num_predict": self._config.max_output_tokens,
-            },
-        }
-        if self._config.thinking_model:
-            payload["think"] = self._config.think
+        payload = build_request_payload(
+            self._config,
+            system_prompt=self._system_prompt,
+            user_message=contextual_request,
+            response_schema=IntentClassification.model_json_schema(),
+        )
         with tracer.start_as_current_span("cctv.llm.classify") as span:
             span.set_attribute("llm.provider", self._config.provider)
             span.set_attribute("llm.model", self._config.model)
@@ -88,7 +79,8 @@ class LLMIntentClassifier:
             logger.debug("LLM classification started model=%s", self._config.model)
             try:
                 response = await self._client.post(
-                    f"{str(self._config.base_url).rstrip('/')}{self._config.chat_path}",
+                    request_url(self._config),
+                    headers=request_headers(self._config),
                     json=payload,
                     timeout=self._config.timeout_seconds,
                 )
@@ -97,9 +89,9 @@ class LLMIntentClassifier:
                 if not isinstance(parsed_response, dict):
                     raise TypeError("LLM provider response must be a JSON object")
                 response_data = parsed_response
-                message_data = response_data["message"]
-                content = message_data["content"]
-                thinking = message_data.get("thinking", "")
+                normalized_response = parse_response(self._config, response_data)
+                content = normalized_response.content
+                thinking = normalized_response.thinking
                 if thinking:
                     span.set_attribute("llm.response.thinking_present", True)
                     logger.debug(
@@ -117,8 +109,8 @@ class LLMIntentClassifier:
                     )
                 result = parse_intent_classification(content)
                 elapsed_ms = round((time.perf_counter() - started_at) * 1000)
-                done_reason = response_data.get("done_reason", "unknown")
-                output_tokens = response_data.get("eval_count")
+                done_reason = normalized_response.finish_reason
+                output_tokens = normalized_response.output_tokens
                 span.set_attribute("llm.response.intent", result.intent.value)
                 if self._tracing_config.capture_llm_outputs:
                     span.set_attribute("llm.response.reason", result.reason)
@@ -154,8 +146,13 @@ class LLMIntentClassifier:
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
                 span.set_attribute("error.type", type(exc).__name__)
                 span.set_attribute("llm.response.elapsed_ms", elapsed_ms)
-                done_reason = response_data.get("done_reason", "unknown")
-                output_tokens = response_data.get("eval_count", "unknown")
+                try:
+                    normalized_response = parse_response(self._config, response_data)
+                    done_reason = normalized_response.finish_reason
+                    output_tokens = normalized_response.output_tokens or "unknown"
+                except (KeyError, TypeError, ValueError):
+                    done_reason = "unknown"
+                    output_tokens = "unknown"
                 span.set_attribute("llm.response.done_reason", str(done_reason))
                 logger.warning(
                     "LLM classification failed model=%s elapsed_ms=%d error_type=%s done_reason=%s output_tokens=%s",

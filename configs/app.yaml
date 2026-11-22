@@ -96,9 +96,11 @@ guardrails:
       pattern: '(?i)(?:\b(?:delete|erase|remove|wipe|destroy|overwrite|alter|edit|modify|hide|conceal|tamper(?:\s+with)?|disable|turn\s+off|stop)\b.{0,100}\b(?:cctv|camera|security)?\s*(?:footage|recordings?|videos?|clips?|evidence|recording)\b|\b(?:footage|recordings?|videos?|clips?|evidence|recording)\b.{0,100}\b(?:delete|erase|remove|wipe|destroy|overwrite|alter|edit|modify|hide|conceal|tamper(?:\s+with)?|disable|turn\s+off|stop)\b)'
 
 llm:
-  provider: ollama
-  base_url: http://localhost:11434
-  model: llama3
+  # Set provider to gemini to use Google's Gemini API instead of local Ollama.
+  provider: gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-3.5-flash-lite
+  api_key_environment_variable: GEMINI_API_KEY
   thinking_model: false
   # Enable Qwen3 reasoning for the intent classifier's structured response.
   think: false

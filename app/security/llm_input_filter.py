@@ -11,6 +11,7 @@ from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import LLMConfig, LLMInputGuardrailConfig, TracingConfig
+from app.llm_provider import build_request_payload, parse_response, request_headers, request_url
 
 
 logger = logging.getLogger(__name__)
@@ -81,22 +82,14 @@ class LLMInputFilter:
         self._system_prompt = build_guardrail_prompt(filter_config)
 
     async def assess(self, message: str) -> GuardrailAssessment:
-        payload = {
-            "model": self._llm_config.model,
-            "messages": [
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": message},
-            ],
-            "format": GuardrailAssessment.model_json_schema(),
-            "stream": False,
-            "keep_alive": self._llm_config.keep_alive,
-            "options": {
-                "temperature": 0.0,
-                "num_predict": self._filter_config.max_output_tokens,
-            },
-        }
-        if self._llm_config.thinking_model:
-            payload["think"] = self._llm_config.think
+        payload = build_request_payload(
+            self._llm_config,
+            system_prompt=self._system_prompt,
+            user_message=message,
+            response_schema=GuardrailAssessment.model_json_schema(),
+            temperature=0.0,
+            max_output_tokens=self._filter_config.max_output_tokens,
+        )
 
         with tracer.start_as_current_span("cctv.input_guardrail.llm") as span:
             span.set_attribute("llm.provider", self._llm_config.provider)
@@ -108,7 +101,8 @@ class LLMInputFilter:
                 span.set_attribute("llm.prompt.user", message)
             try:
                 response = await self._client.post(
-                    f"{str(self._llm_config.base_url).rstrip('/')}{self._llm_config.chat_path}",
+                    request_url(self._llm_config),
+                    headers=request_headers(self._llm_config),
                     json=payload,
                     timeout=self._llm_config.timeout_seconds,
                 )
@@ -117,9 +111,9 @@ class LLMInputFilter:
                 if not isinstance(provider_result, dict):
                     raise TypeError("LLM provider response must be a JSON object")
 
-                message_data = provider_result["message"]
-                content = message_data["content"]
-                thinking = message_data.get("thinking", "")
+                normalized_response = parse_response(self._llm_config, provider_result)
+                content = normalized_response.content
+                thinking = normalized_response.thinking
                 if thinking:
                     span.set_attribute("llm.response.thinking_present", True)
                     logger.debug(

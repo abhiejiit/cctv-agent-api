@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.api.schemas import HealthResponse
 from app.config import LLMConfig
+from app.llm_provider import get_provider
 
 
 router = APIRouter()
@@ -29,34 +30,42 @@ async def readiness(request: Request, response: Response) -> HealthResponse:
     if guardrail_enabled:
         configs.append(settings.guardrail_llm)
 
-    endpoint_results: dict[str, tuple[str, set[str]]] = {}
+    endpoint_results: dict[tuple[str, str, str], tuple[str, set[str]]] = {}
     for config in configs:
-        endpoint = f"{str(config.base_url).rstrip('/')}{config.readiness_path}"
-        if endpoint in endpoint_results:
+        adapter = get_provider(config.provider)
+        endpoint = adapter.readiness_url(config)
+        credential_id = adapter.readiness_credential_key(config)
+        try:
+            headers = adapter.request_headers(config)
+        except ValueError:
+            endpoint_results[(config.provider, endpoint, credential_id)] = ("unreachable", set())
+            continue
+        endpoint_key = (config.provider, endpoint, credential_id)
+        if endpoint_key in endpoint_results:
             continue
         try:
-            result = await client.get(endpoint, timeout=min(config.timeout_seconds, 3.0))
+            result = await client.get(
+                endpoint,
+                headers=headers,
+                timeout=min(config.timeout_seconds, 3.0),
+            )
             result.raise_for_status()
             model_payload = result.json()
             if not isinstance(model_payload, dict) or not isinstance(model_payload.get("models"), list):
                 raise ValueError("Invalid model readiness response")
-            model_names = {
-                name
-                for item in model_payload["models"]
-                if isinstance(item, dict)
-                for name in (item.get("name"), item.get("model"))
-                if isinstance(name, str)
-            }
-            endpoint_results[endpoint] = ("reachable", model_names)
+            model_names = adapter.available_models(model_payload)
+            endpoint_results[endpoint_key] = ("reachable", model_names)
         except (httpx.HTTPError, ValueError):
-            endpoint_results[endpoint] = ("unreachable", set())
+            endpoint_results[endpoint_key] = ("unreachable", set())
 
     def model_status(config: LLMConfig) -> str:
-        endpoint = f"{str(config.base_url).rstrip('/')}{config.readiness_path}"
-        endpoint_status, model_names = endpoint_results[endpoint]
+        adapter = get_provider(config.provider)
+        endpoint = adapter.readiness_url(config)
+        credential_id = adapter.readiness_credential_key(config)
+        endpoint_status, model_names = endpoint_results[(config.provider, endpoint, credential_id)]
         if endpoint_status != "reachable":
             return "unreachable"
-        configured_model = config.model
+        configured_model = adapter.configured_model_name(config)
         if configured_model not in model_names and f"{configured_model}:latest" not in model_names:
             return "model_unavailable"
         return "reachable"
