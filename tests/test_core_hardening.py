@@ -21,6 +21,7 @@ from app.orchestration.intent_router import AgentInvocationResult, build_agent_t
 from app.planning.classifier import LLMClassifierError
 from app.planning.classifier import LLMIntentClassifier
 from app.planning.models import IntentClassification, IntentLabel
+from app.planning.policy import build_system_prompt
 from app.planning.validation import parse_intent_classification
 from app.security.input_guardrails import InputGuardrails
 from app.security.input_validation import normalize_user_input
@@ -65,6 +66,15 @@ class CoreHardeningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             IntentClassification(intent="parking", reason="word " * 31)
 
+    def test_classifier_prompt_has_contextual_few_shot_routing_examples(self) -> None:
+        prompt = build_system_prompt(self.settings.camera_catalog)
+        self.assertIn("CONTEXT EXAMPLES", prompt)
+        self.assertIn('current="Is it still there?" -> parking', prompt)
+        self.assertIn('current="The front entrance." -> front_entrance', prompt)
+        self.assertIn('current="Is that door open?" -> intent_clarify', prompt)
+        self.assertIn('current="Person on the lawn and a car in parking?" -> intent_clarify', prompt)
+        self.assertIn('current="What about the back entrance?" -> back_entrance', prompt)
+
     def test_classifier_llm_call_uses_structured_output_contract(self) -> None:
         async def classify() -> None:
             async def handler(request: httpx.Request) -> httpx.Response:
@@ -72,11 +82,11 @@ class CoreHardeningTests(unittest.TestCase):
                 self.assertIn("properties", request_json["format"])
                 self.assertFalse(request_json["stream"])
                 self.assertIn(
-                    "Review the complete conversation history from oldest to newest",
+                    "Classify CURRENT_MESSAGE using its conversation history",
                     request_json["messages"][0]["content"],
                 )
                 self.assertIn(
-                    "classifying the current request only",
+                    "Classify only the current turn",
                     request_json["messages"][0]["content"],
                 )
                 contextual_request = json.loads(request_json["messages"][1]["content"])
